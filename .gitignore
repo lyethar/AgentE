@@ -1,0 +1,22 @@
+# Scan output — can be large and contains target data
+output/
+
+# Cloned tools and generated wrappers
+tools/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Claude Code internal
+.claude/

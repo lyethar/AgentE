@@ -1,0 +1,87 @@
+# AgentE — Enumeration Orchestrator Configuration
+# ─────────────────────────────────────────────────
+
+# Stage 1: Subdomain Enumeration
+subdomains:
+  subfinder:
+    timeout: 300
+    extra_args: []
+    # extra_args: ["-sources", "crtsh,hackertarget,virustotal", "-rate-limit", "150"]
+
+  subscraper:
+    timeout: 300
+    extra_args: []
+
+  bbot:
+    timeout: 600
+    extra_args: []
+    # extra_args: ["-m", "crtsh", "dnsx", "hackertarget", "columbus"]
+
+# Stage 2: Validation
+validation:
+  dnsgen:
+    timeout: 120
+    wordlist: ""          # path to custom wordlist, or empty to skip -w flag
+    extra_args: []
+
+  puredns:
+    timeout: 600
+    rate_limit: 3000      # DNS queries per second
+    resolvers: ""         # path to resolvers.txt, or empty to use built-in
+    extra_args: []
+    # resolvers: "/opt/wordlists/resolvers.txt"
+
+  httpx:
+    timeout: 600
+    threads: 50
+    probe_timeout: 10     # seconds per HTTP request
+    extra_args: []
+    # extra_args: ["-screenshot", "-screenshot-timeout", "10"]
+
+# Stage 3: JS & Endpoint Enumeration
+js_enum:
+  gospider:
+    timeout: 600
+    threads: 10
+    depth: 3
+    concurrent: 5
+    timeout_per_req: 15
+    extra_args: []
+
+  katana:
+    timeout: 600
+    depth: 3
+    concurrency: 10
+    timeout_per_req: 15
+    extra_args: []
+    # extra_args: ["-headless", "-xhr", "-form"]
+
+# Stage 4: Cloud Infrastructure
+cloud:
+  cloud_enum:
+    timeout: 600
+    extra_args: []
+    # extra_args: ["-l", "/opt/wordlists/cloud_enum_mutations.txt"]
+
+  pycroburst:
+    timeout: 600
+    mutations: 200
+    wordlist: ""          # path to custom wordlist
+    extra_args: []
+
+# Stage 5: Email & Username Enumeration
+email:
+  phonebooks:
+    api_key: ""           # optional - get from phonebook.cz
+    max_pages: 5
+
+  linkedin2username:
+    timeout: 300
+    cookie: ""            # LinkedIn li_at session cookie (required)
+    extra_args: []
+    # extra_args: ["-s", "50", "-sleep", "2"]
+
+# Global settings
+global:
+  max_concurrency: 4      # max parallel tool runs
+  output_base: "output"   # base directory for all run outputs
