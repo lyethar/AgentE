@@ -1,5 +1,5 @@
 """
-Stage 6 — Interactive HTML Report Generation
+Stage 8 — Interactive HTML Report Generation
 Produces a self-contained single-file HTML report with:
   - Executive summary dashboard
   - Filterable/sortable DataTables for each section
@@ -129,6 +129,12 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
   </div>
   <div class="col-6 col-md-2">
     <div class="stat-card p-3 text-center">
+      <div class="stat-value">{total_exposures}</div>
+      <div class="stat-label">Exposures</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="stat-card p-3 text-center">
       <div class="stat-value">{total_secrets}</div>
       <div class="stat-label">Secrets &#9888;</div>
     </div>
@@ -165,6 +171,7 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-collected">Collected Assets</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-cloud">Cloud</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-email">Email Intel</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-exposure">Exposure OSINT</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-secrets">Secrets &#9888;</button></li>
 </ul>
 
@@ -301,6 +308,49 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
   </div>
 </div>
 
+<!-- EXPOSURE OSINT -->
+<div class="tab-pane fade" id="tab-exposure">
+  <div class="section-card p-3">
+    <div class="section-title">Exposure &amp; Secrets Discovery &mdash; External OSINT</div>
+    <p class="text-muted small">
+      LeakIX leak intelligence, GitHub secret mining (Gitminer3), and Google
+      dorking (Claude&nbsp;+&nbsp;Chrome). Full dork lists are saved to
+      <code>dorks.txt</code> and <code>google_dorks.txt</code> in the run directory.
+    </p>
+    <ul class="nav nav-tabs mb-3" id="expTabs">
+      <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#exp-leakix">LeakIX ({cnt_leakix})</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#exp-github">GitHub Secrets ({cnt_github})</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#exp-google">Google Dorks ({cnt_google}/{cnt_google_total})</button></li>
+    </ul>
+    <div class="tab-content">
+      <div class="tab-pane fade show active" id="exp-leakix">
+        <p class="text-muted small">Source: leakix.net &mdash; method: <code>{leakix_method}</code></p>
+        <table id="tblLeakix" class="table table-sm w-100">
+          <thead><tr><th>Host</th><th>IP</th><th>Event</th><th>Summary</th><th>Date</th></tr></thead>
+          <tbody>{rows_leakix}</tbody>
+        </table>
+      </div>
+      <div class="tab-pane fade" id="exp-github">
+        <p class="text-muted small">Gitminer3 results scoped to the target domain. Verify each hit manually.</p>
+        <table id="tblGithub" class="table table-sm w-100">
+          <thead><tr><th>Repository / File</th><th>URL</th><th>Match</th></tr></thead>
+          <tbody>{rows_github}</tbody>
+        </table>
+      </div>
+      <div class="tab-pane fade" id="exp-google">
+        <p class="text-muted small">
+          Queries that returned results are listed first. <code>captcha</code> notes
+          indicate Google blocked the automated lookup &mdash; re-run those by hand.
+        </p>
+        <table id="tblGoogle" class="table table-sm w-100">
+          <thead><tr><th>Dork</th><th>Hit</th><th>Top Results</th><th>Note</th></tr></thead>
+          <tbody>{rows_google}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- SECRETS -->
 <div class="tab-pane fade" id="tab-secrets">
   <div class="section-card p-3">
@@ -326,7 +376,7 @@ $(function() {{
   const dtOpts = {{ pageLength: 25, lengthMenu: [25, 50, 100, 500] }};
   ['#tblSubs','#tblLive','#tblEp','#tblJs','#tblApi','#tblCollected',
    '#tblS3','#tblAzure','#tblGcp','#tblFunc',
-   '#tblEmails','#tblUsers','#tblSecrets'].forEach(id => {{
+   '#tblEmails','#tblUsers','#tblLeakix','#tblGithub','#tblGoogle','#tblSecrets'].forEach(id => {{
     if ($(id).length) $(id).DataTable(dtOpts);
   }});
 
@@ -461,14 +511,16 @@ def _build_chart_tools(all_tool_results: list[dict]) -> str:
 def generate_report(
     domain: str,
     outdir: Path,
-    sub_data:     dict,
-    val_data:     dict,
-    js_data:      dict,
-    collect_data: dict,
-    cloud_data:   dict,
-    email_data:   dict,
+    sub_data:      dict,
+    val_data:      dict,
+    js_data:       dict,
+    collect_data:  dict,
+    cloud_data:    dict,
+    email_data:    dict,
+    exposure_data: dict | None = None,
 ) -> Path:
-    log.info("=== Stage 7: Generating HTML Report ===")
+    log.info("=== Stage 8: Generating HTML Report ===")
+    exposure_data = exposure_data or {}
 
     # ── Subdomains ──
     subs_by_tool: dict[str, list] = sub_data.get("by_tool", {})
@@ -553,6 +605,64 @@ def generate_report(
         for s in secrets
     )
 
+    # ── Exposure OSINT ──
+    leakix   = exposure_data.get("leakix", {}) or {}
+    gitminer = exposure_data.get("gitminer", {}) or {}
+    gdorks   = exposure_data.get("google_dorks", {}) or {}
+
+    leakix_results = leakix.get("results", [])
+    rows_leakix = "\n".join(
+        f'<tr><td>{_esc(str(r.get("host","")))}</td>'
+        f'<td>{_esc(str(r.get("ip","")))}</td>'
+        f'<td>{_esc(str(r.get("event","")))}</td>'
+        f'<td>{_esc(str(r.get("summary","")))}</td>'
+        f'<td class="ts">{_esc(str(r.get("date","")))}</td></tr>'
+        for r in leakix_results
+    )
+
+    def _pick(d: dict, *keys: str) -> str:
+        for k in keys:
+            for actual in d:
+                if actual.lower() == k:
+                    return str(d[actual])
+        return ""
+
+    github_findings = gitminer.get("findings", [])
+    rows_github_parts = []
+    for f in github_findings:
+        if not isinstance(f, dict):
+            continue
+        repo  = _pick(f, "repository", "repo", "file", "filename", "name", "path")
+        url   = _pick(f, "url", "html_url", "link")
+        match = _pick(f, "match", "dork", "query", "matched", "snippet")
+        url_cell = f'<a href="{_esc(url)}" target="_blank">{_esc(url)}</a>' if url else ""
+        rows_github_parts.append(
+            f'<tr><td>{_esc(repo)}</td><td>{url_cell}</td>'
+            f'<td class="text-muted small">{_esc(match)}</td></tr>'
+        )
+    rows_github = "\n".join(rows_github_parts)
+
+    google_findings = sorted(
+        gdorks.get("findings", []),
+        key=lambda f: (not f.get("results_found", False)),
+    )
+    rows_google_parts = []
+    for f in google_findings:
+        if not isinstance(f, dict):
+            continue
+        hit = ('<span class="text-success">yes</span>'
+               if f.get("results_found") else '<span class="text-muted">no</span>')
+        tops = f.get("top_results", []) or []
+        tops_cell = "<br>".join(
+            f'<a href="{_esc(str(u))}" target="_blank">{_esc(str(u)[:90])}</a>' for u in tops[:3]
+        )
+        rows_google_parts.append(
+            f'<tr><td class="small">{_esc(str(f.get("dork","")))}</td>'
+            f'<td>{hit}</td><td class="small">{tops_cell}</td>'
+            f'<td class="text-muted small">{_esc(str(f.get("note","")))}</td></tr>'
+        )
+    rows_google = "\n".join(rows_google_parts)
+
     # ── Charts ──
     all_tool_results = (
         sub_data.get("tool_results", [])
@@ -561,6 +671,7 @@ def generate_report(
         + collect_data.get("tool_results", [])
         + cloud_data.get("tool_results", [])
         + email_data.get("tool_results", [])
+        + exposure_data.get("tool_results", [])
     )
 
     html = _HTML_TEMPLATE.format(
@@ -576,6 +687,7 @@ def generate_report(
         rows_collected=rows_collected,
         total_cloud=cloud_data.get("total", 0),
         total_emails=len(all_emails),
+        total_exposures=exposure_data.get("total", 0),
         total_secrets=len(secrets),
         total_js=len(js_files),
         total_api=len(api_paths),
@@ -595,6 +707,14 @@ def generate_report(
         rows_func=rows_func,
         rows_emails=rows_emails,
         rows_usernames=rows_usernames,
+        cnt_leakix=leakix.get("count", 0),
+        cnt_github=gitminer.get("count", 0),
+        cnt_google=gdorks.get("count", 0),
+        cnt_google_total=gdorks.get("dorks_total", 0),
+        leakix_method=leakix.get("method", "n/a"),
+        rows_leakix=rows_leakix,
+        rows_github=rows_github,
+        rows_google=rows_google,
         rows_secrets=rows_secrets,
         chart_sources_json=_build_chart_sources(subs_by_tool),
         chart_status_json=_build_chart_status(hosts),

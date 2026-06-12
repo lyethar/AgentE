@@ -22,6 +22,8 @@ import logging
 import os
 import re
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -196,6 +198,83 @@ def _download_one(session, url: str, dest: Path, timeout: int) -> str:
         return "failed"
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Prettier — pretty-print downloaded JavaScript for readable client-side review
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _prettier_command() -> list[str] | None:
+    """
+    Resolve a runnable Prettier invocation:
+      1. a globally/locally installed `prettier` binary, else
+      2. `npx --yes prettier` (auto-fetches Prettier on first run).
+    Returns the base command list, or None if neither npm/npx nor prettier exist.
+    """
+    direct = shutil.which("prettier")
+    if direct:
+        return [direct]
+    npx = shutil.which("npx")
+    if npx:
+        return [npx, "--yes", "prettier"]
+    return None
+
+
+def _run_prettier(collected_root: Path, cfg: dict) -> dict:
+    """
+    Format every downloaded *.js file in-place with Prettier.
+    Best-effort: a missing toolchain or a Prettier error never fails the stage.
+    """
+    pcfg = cfg.get("prettier", {})
+    if isinstance(pcfg, bool):          # allow `prettier: true/false` shorthand
+        enabled, pcfg = pcfg, {}
+    else:
+        enabled = pcfg.get("enabled", True)
+
+    info = {"enabled": enabled, "available": False, "formatted": 0,
+            "skipped": True, "skip_reason": ""}
+
+    if not enabled:
+        info["skip_reason"] = "disabled in config"
+        return info
+
+    base = _prettier_command()
+    if not base:
+        info["skip_reason"] = "prettier/npx not found (npm install -g prettier)"
+        log.warning("Collector: Prettier not available — skipping JS formatting "
+                    "(install per https://prettier.io/docs/install)")
+        return info
+
+    info["available"] = True
+    timeout = int(pcfg.get("timeout", 600))
+    # Prettier prints each rewritten file path to stdout; glob is relative to cwd.
+    cmd = base + ["--write", "--no-error-on-unmatched-pattern",
+                  "--log-level", "warn", "**/*.js"]
+    log.info("Collector: formatting downloaded JS with Prettier ...")
+    try:
+        proc = subprocess.run(
+            cmd, cwd=str(collected_root),
+            capture_output=True, text=True, timeout=timeout,
+        )
+        formatted = sum(
+            1 for ln in (proc.stdout or "").splitlines()
+            if ln.strip().lower().endswith(".js")
+        )
+        info["formatted"] = formatted
+        info["skipped"] = False
+        if proc.returncode != 0 and not formatted:
+            info["skip_reason"] = (proc.stderr or "").strip()[:200] or "prettier error"
+            log.warning("Collector: Prettier exited %d: %s",
+                        proc.returncode, info["skip_reason"])
+        else:
+            log.info("Collector: Prettier formatted %d JS file(s)", formatted)
+    except subprocess.TimeoutExpired:
+        info["skip_reason"] = f"timed out after {timeout}s"
+        log.warning("Collector: Prettier timed out after %ds", timeout)
+    except Exception as exc:
+        info["skip_reason"] = str(exc)
+        log.warning("Collector: Prettier failed: %s", exc)
+    return info
+
+
 def _collect_blocking(outdir: Path, js_data: dict, cfg: dict) -> dict:
     """Synchronous collection routine (run in a thread from the async stage)."""
     collected_root = outdir / "collected"
@@ -248,6 +327,15 @@ def _collect_blocking(outdir: Path, js_data: dict, cfg: dict) -> dict:
                              done, len(plan), counts["downloaded"],
                              counts["skipped"], counts["failed"])
 
+    # Format the downloaded JavaScript so it's readable for client-side review
+    js_count = sum(1 for m in manifest if m["kind"] == "js")
+    if js_count and counts.get("downloaded", 0):
+        prettier_info = _run_prettier(collected_root, cfg)
+    else:
+        prettier_info = {"enabled": cfg.get("prettier", True) not in (False, {"enabled": False}),
+                         "available": False, "formatted": 0, "skipped": True,
+                         "skip_reason": "no JavaScript downloaded"}
+
     # Per-asset aggregation for the report
     by_asset: dict[str, dict] = {}
     for m in manifest:
@@ -262,9 +350,9 @@ def _collect_blocking(outdir: Path, js_data: dict, cfg: dict) -> dict:
     )
     _write_listing(collected_root, by_asset, counts)
 
-    js_count = sum(1 for m in manifest if m["kind"] == "js")
-    log.info("Collector: assets=%d  js=%d  downloaded=%d  skipped=%d  failed=%d",
-             len(by_asset), js_count, counts["downloaded"], counts["skipped"], counts["failed"])
+    log.info("Collector: assets=%d  js=%d  downloaded=%d  skipped=%d  failed=%d  prettier=%d",
+             len(by_asset), js_count, counts["downloaded"], counts["skipped"],
+             counts["failed"], prettier_info.get("formatted", 0))
 
     return {
         "root": str(collected_root),
@@ -272,12 +360,20 @@ def _collect_blocking(outdir: Path, js_data: dict, cfg: dict) -> dict:
         "by_asset": by_asset,
         "total_urls": len(urls),
         "js_count": js_count,
+        "prettier": prettier_info,
         "manifest": manifest,
-        "tool_results": [{
-            "tool": "collector", "duration": 0.0,
-            "skipped": not _REQUESTS_AVAILABLE,
-            "skip_reason": "" if _REQUESTS_AVAILABLE else "requests not installed",
-        }],
+        "tool_results": [
+            {
+                "tool": "collector", "duration": 0.0,
+                "skipped": not _REQUESTS_AVAILABLE,
+                "skip_reason": "" if _REQUESTS_AVAILABLE else "requests not installed",
+            },
+            {
+                "tool": "prettier", "duration": 0.0,
+                "skipped": prettier_info.get("skipped", True),
+                "skip_reason": prettier_info.get("skip_reason", ""),
+            },
+        ],
     }
 
 

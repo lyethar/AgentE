@@ -62,6 +62,16 @@ MANAGED_TOOLS: list[dict] = [
         ],
         "description":  "LinkedIn username enumeration via employee scraping",
     },
+    {
+        "name":         "gitminer3",
+        "aliases":      ["gitminer", "gitminer3", "gm3"],
+        "repo":         "https://github.com/unkl4b/Gitminer3",
+        "clone_dir":    "gitminer3",
+        "entry_points": [
+            {"wrapper": "gitminer3", "script": "gitminer_v3.py"},
+        ],
+        "description":  "GitHub secret/dork mining (Stage 7) — needs a GITHUB_TOKEN",
+    },
 ]
 
 

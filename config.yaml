@@ -61,6 +61,9 @@ collect:
   workers: 10             # concurrent download threads
   timeout: 30            # per-file HTTP timeout (seconds)
   # user_agent: "Mozilla/5.0 ..."   # override the download User-Agent
+  prettier:
+    enabled: true         # format downloaded JS with Prettier (npx/global prettier)
+    timeout: 600          # max seconds for the formatting pass
 
 # Stage 5: Cloud Infrastructure
 cloud:
@@ -86,6 +89,29 @@ email:
     cookie: ""            # LinkedIn li_at session cookie (required)
     extra_args: []
     # extra_args: ["-s", "50", "-sleep", "2"]
+
+# Stage 7: Exposure & Secrets Discovery (LeakIX, Gitminer3, Google dorks)
+exposure:
+  leakix:
+    method: chrome        # "chrome" (Claude + Chrome) or "api" (direct JSON API)
+    api_key: ""           # optional leakix.net API key (raises limits)
+    permission_mode: acceptEdits
+    timeout: 300
+
+  gitminer:
+    enabled: true
+    github_token: ""      # GitHub PAT; falls back to GITHUB_TOKEN env var
+    max_results: 100      # -m: max results per dork
+    timeout: 1200
+
+  google_dorks:
+    enabled: true         # requires the `claude` CLI with --chrome
+    max_dorks: 20         # cap how many dorks to run (0 = all; Google rate-limits)
+    batch_size: 5         # dorks per Claude browser task
+    permission_mode: acceptEdits
+    max_turns: 30         # bound agent iterations per batch
+    max_budget_usd: 2.0   # bound spend per batch
+    timeout: 600          # per-batch timeout (seconds)
 
 # Global settings
 global:
