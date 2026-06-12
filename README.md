@@ -1,6 +1,6 @@
 # AgentE
 
-Agentic reconnaissance workflow that orchestrates subdomain enumeration, DNS validation, JavaScript crawling, cloud infrastructure discovery, and email intelligence — then consolidates everything into an interactive HTML report.
+Agentic reconnaissance workflow that orchestrates subdomain enumeration, DNS validation, JavaScript crawling, asset collection, cloud infrastructure discovery, and email intelligence — then consolidates everything into an interactive HTML report.
 
 ---
 
@@ -15,10 +15,12 @@ Target Domain
     │                   │ sequential — each tool feeds the next
     ├─ Stage 3 ─ JS & Endpoint Crawl      (gospider · katana)
     │                   │ parallel
-    ├─ Stage 4 ─ Cloud Infrastructure     (cloud_enum → pycroburst)  ─┐ parallel
-    ├─ Stage 5 ─ Email Intelligence        (phonebooks.cz · linkedin2username) ─┘
+    ├─ Stage 4 ─ Asset Collection         (download all JS/JSON/config, organize per asset)
+    │                   │ sequential — consumes Stage 3 crawl output
+    ├─ Stage 5 ─ Cloud Infrastructure     (cloud_enum → pycroburst)  ─┐ parallel
+    ├─ Stage 6 ─ Email Intelligence        (phonebooks.cz · linkedin2username) ─┘
     │
-    └─ Stage 6 ─ HTML Report
+    └─ Stage 7 ─ HTML Report
 ```
 
 ---
@@ -43,11 +45,13 @@ pip install -r requirements.txt
 | `httpx` | 2 | `go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest` |
 | `gospider` | 3 | `go install github.com/jaeles-project/gospider@latest` |
 | `katana` | 3 | `go install github.com/projectdiscovery/katana/cmd/katana@latest` |
-| `cloud_enum` | 4 | `pip install cloud-enum` |
-| `pycroburst` | 4 | `python install_tools.py pycroburst` ← auto-installer |
-| `linkedin2username` | 5 | `python install_tools.py linkedin2username` ← auto-installer |
+| `cloud_enum` | 5 | `pip install cloud-enum` |
+| `pycroburst` | 5 | `python install_tools.py pycroburst` ← auto-installer |
+| `linkedin2username` | 6 | `python install_tools.py linkedin2username` ← auto-installer |
 
 Tools that are missing are skipped gracefully at runtime — you only get output for what's installed.
+
+> **Stage 4** (Asset Collection) needs no external binary — it uses the bundled `requests` library to download files, so it always runs as long as Python dependencies are installed.
 
 ---
 
@@ -88,15 +92,15 @@ Wrappers are written to `tools/bin/` and resolved automatically at runtime — n
 ## Usage
 
 ```bash
-# Full run — all 6 stages
+# Full run — all 7 stages
 python orchestrator.py -d example.com
 
 # Include company name for LinkedIn enumeration
 python orchestrator.py -d example.com -c "Acme Corp"
 
-# Run specific stages only
+# Run specific stages only (1=subs 2=validate 3=js 4=collect 5=cloud 6=email 7=report)
 python orchestrator.py -d example.com --stages 1,2
-python orchestrator.py -d example.com --stages 3,4,5,6
+python orchestrator.py -d example.com --stages 3,4,7      # crawl, download JS, report
 
 # Check which tools are installed before running
 python orchestrator.py -d example.com --check-tools
@@ -129,7 +133,12 @@ validation:
     threads: 50
     extra_args: ["-screenshot", "-screenshot-timeout", "10"]
 
-# Stage 5 — LinkedIn session cookie + phonebooks.cz API key
+# Stage 4 — asset download (JS/JSON/config)
+collect:
+  workers: 10            # concurrent download threads
+  timeout: 30           # per-file HTTP timeout (seconds)
+
+# Stage 6 — LinkedIn session cookie + phonebooks.cz API key
 email:
   phonebooks:
     api_key: "YOUR_KEY_HERE"
@@ -158,6 +167,13 @@ output/example.com/20240501_130000/
 ├── gospider/                 # crawler output
 ├── katana.txt
 ├── endpoints_all.txt         # merged crawled URLs
+├── collected/                # Stage 4 — downloaded assets, organized per asset
+│   ├── <asset-domain>/
+│   │   ├── js/               # downloaded JavaScript (for client-side inspection)
+│   │   ├── json/             # downloaded JSON
+│   │   └── config/           # downloaded config-like files
+│   ├── asset_manifest.json   # every download: url, asset, kind, path, status
+│   └── collected_files.txt   # human-readable directory listing
 ├── cloud_enum.txt
 ├── pycroburst.txt
 ├── emails_all.txt
@@ -177,11 +193,12 @@ Runs never overwrite each other — each gets its own timestamped directory.
 The report is a self-contained single HTML file. No server required — open it directly in a browser.
 
 **Sections:**
-- **Dashboard** — stat cards for subdomains, live hosts, endpoints, cloud assets, emails, secrets
+- **Dashboard** — stat cards for subdomains, live hosts, endpoints, JS collected, cloud assets, emails, secrets
 - **Charts** — subdomain source breakdown, HTTP status distribution, tool execution times
 - **Subdomains** — filterable table with source attribution per subdomain
 - **Live Hosts** — HTTP status, page title, detected tech stack, IP
 - **Endpoints** — all discovered URLs, JS files tab, API paths tab
+- **Collected Assets** — per-asset download counts (JS/JSON/config) with download/skip/fail totals
 - **Cloud** — S3 buckets, Azure blob storage, GCP, serverless functions
 - **Email Intel** — email addresses with source, LinkedIn usernames
 - **Secrets** — regex-matched patterns from crawled JS (verify manually)
@@ -197,9 +214,10 @@ All tables have live search, column sort, and pagination.
 | 1 | Subdomain Enumeration | subfinder, subscraper, bbot | domain | `subdomains_all.txt` |
 | 2 | Validation | dnsgen, puredns, httpx | subdomains | `resolved_subdomains.txt`, `httpx.json`, `live_urls.txt` |
 | 3 | JS & Endpoint Crawl | gospider, katana | live URLs | `endpoints_all.txt` |
-| 4 | Cloud Infrastructure | cloud_enum, pycroburst | domain keyword | cloud asset lists |
-| 5 | Email Intelligence | phonebooks.cz API, linkedin2username | domain, company | `emails_all.txt`, `usernames_all.txt` |
-| 6 | Report | — | all stage outputs | `report_<domain>.html`, `summary.json` |
+| 4 | Asset Collection | `requests` (built-in) | Stage 3 crawl output | `collected/<asset>/{js,json,config}/`, `asset_manifest.json` |
+| 5 | Cloud Infrastructure | cloud_enum, pycroburst | domain keyword | cloud asset lists |
+| 6 | Email Intelligence | phonebooks.cz API, linkedin2username | domain, company | `emails_all.txt`, `usernames_all.txt` |
+| 7 | Report | — | all stage outputs | `report_<domain>.html`, `summary.json` |
 
 ---
 
@@ -252,9 +270,10 @@ AgentE/
 │   ├── subdomains.py        # Stage 1
 │   ├── validation.py        # Stage 2
 │   ├── js_enum.py           # Stage 3
-│   ├── cloud.py             # Stage 4
-│   ├── email_enum.py        # Stage 5
-│   └── reporting.py         # Stage 6 — HTML report generator
+│   ├── collector.py         # Stage 4 — asset collection & JS download
+│   ├── cloud.py             # Stage 5
+│   ├── email_enum.py        # Stage 6
+│   └── reporting.py         # Stage 7 — HTML report generator
 └── utils/
     ├── runner.py            # Async subprocess runner + local tool resolution
     └── logger.py            # Colour console + file logging

@@ -56,7 +56,13 @@ js_enum:
     extra_args: []
     # extra_args: ["-headless", "-xhr", "-form"]
 
-# Stage 4: Cloud Infrastructure
+# Stage 4: Asset Collection & JavaScript Download
+collect:
+  workers: 10             # concurrent download threads
+  timeout: 30            # per-file HTTP timeout (seconds)
+  # user_agent: "Mozilla/5.0 ..."   # override the download User-Agent
+
+# Stage 5: Cloud Infrastructure
 cloud:
   cloud_enum:
     timeout: 600
@@ -69,7 +75,7 @@ cloud:
     wordlist: ""          # path to custom wordlist
     extra_args: []
 
-# Stage 5: Email & Username Enumeration
+# Stage 6: Email & Username Enumeration
 email:
   phonebooks:
     api_key: ""           # optional - get from phonebook.cz

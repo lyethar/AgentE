@@ -111,6 +111,12 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
   </div>
   <div class="col-6 col-md-2">
     <div class="stat-card p-3 text-center">
+      <div class="stat-value">{total_collected}</div>
+      <div class="stat-label">JS Collected</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="stat-card p-3 text-center">
       <div class="stat-value">{total_cloud}</div>
       <div class="stat-label">Cloud Assets</div>
     </div>
@@ -156,6 +162,7 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
   <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#tab-subs">Subdomains</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-live">Live Hosts</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-ep">Endpoints</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-collected">Collected Assets</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-cloud">Cloud</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-email">Email Intel</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-secrets">Secrets &#9888;</button></li>
@@ -214,6 +221,23 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
         </table>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- COLLECTED ASSETS -->
+<div class="tab-pane fade" id="tab-collected">
+  <div class="section-card p-3">
+    <div class="section-title">Collected Assets &mdash; Downloaded for Client-Side Inspection</div>
+    <p class="text-muted small">
+      JavaScript, JSON, and config files downloaded into per-asset directories under
+      <code>collected/</code>. Downloaded: <strong class="text-success">{collected_ok}</strong> &nbsp;|&nbsp;
+      Skipped: <strong class="text-warning">{collected_skip}</strong> &nbsp;|&nbsp;
+      Failed: <strong class="text-danger">{collected_fail}</strong>
+    </p>
+    <table id="tblCollected" class="table table-sm w-100">
+      <thead><tr><th>Asset (Domain)</th><th>JS</th><th>JSON</th><th>Config</th><th>Total</th></tr></thead>
+      <tbody>{rows_collected}</tbody>
+    </table>
   </div>
 </div>
 
@@ -300,7 +324,7 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
 <script>
 $(function() {{
   const dtOpts = {{ pageLength: 25, lengthMenu: [25, 50, 100, 500] }};
-  ['#tblSubs','#tblLive','#tblEp','#tblJs','#tblApi',
+  ['#tblSubs','#tblLive','#tblEp','#tblJs','#tblApi','#tblCollected',
    '#tblS3','#tblAzure','#tblGcp','#tblFunc',
    '#tblEmails','#tblUsers','#tblSecrets'].forEach(id => {{
     if ($(id).length) $(id).DataTable(dtOpts);
@@ -437,13 +461,14 @@ def _build_chart_tools(all_tool_results: list[dict]) -> str:
 def generate_report(
     domain: str,
     outdir: Path,
-    sub_data:    dict,
-    val_data:    dict,
-    js_data:     dict,
-    cloud_data:  dict,
-    email_data:  dict,
+    sub_data:     dict,
+    val_data:     dict,
+    js_data:      dict,
+    collect_data: dict,
+    cloud_data:   dict,
+    email_data:   dict,
 ) -> Path:
-    log.info("=== Stage 6: Generating HTML Report ===")
+    log.info("=== Stage 7: Generating HTML Report ===")
 
     # ── Subdomains ──
     subs_by_tool: dict[str, list] = sub_data.get("by_tool", {})
@@ -488,6 +513,16 @@ def generate_report(
     rows_js        = _rows(js_files)
     rows_api       = _rows(api_paths)
 
+    # ── Collected Assets ──
+    collect_counts  = collect_data.get("counts", {})
+    by_asset        = collect_data.get("by_asset", {})
+    rows_collected = "\n".join(
+        f'<tr><td>{_esc(asset)}</td>'
+        f'<td>{a.get("js", 0)}</td><td>{a.get("json", 0)}</td>'
+        f'<td>{a.get("config", 0)}</td><td>{a.get("total", 0)}</td></tr>'
+        for asset, a in sorted(by_asset.items())
+    )
+
     # ── Cloud ──
     assets   = cloud_data.get("assets", {})
     rows_s3    = _rows(assets.get("s3", []))
@@ -523,6 +558,7 @@ def generate_report(
         sub_data.get("tool_results", [])
         + val_data.get("tool_results", [])
         + js_data.get("tool_results", [])
+        + collect_data.get("tool_results", [])
         + cloud_data.get("tool_results", [])
         + email_data.get("tool_results", [])
     )
@@ -533,6 +569,11 @@ def generate_report(
         total_subdomains=len(all_subs),
         total_live=len(hosts),
         total_endpoints=len(endpoints),
+        total_collected=collect_counts.get("downloaded", 0),
+        collected_ok=collect_counts.get("downloaded", 0),
+        collected_skip=collect_counts.get("skipped", 0),
+        collected_fail=collect_counts.get("failed", 0),
+        rows_collected=rows_collected,
         total_cloud=cloud_data.get("total", 0),
         total_emails=len(all_emails),
         total_secrets=len(secrets),

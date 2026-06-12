@@ -26,6 +26,7 @@ from pathlib import Path
 import yaml
 
 from modules.cloud      import enumerate_cloud
+from modules.collector  import collect_assets
 from modules.email_enum import enumerate_emails
 from modules.js_enum    import enumerate_js
 from modules.reporting  import generate_report
@@ -44,9 +45,11 @@ BANNER = r"""
        |___/    github.com/lyethar/AgentE
 """
 
-ALL_STAGES = [1, 2, 3, 4, 5, 6]
+ALL_STAGES = [1, 2, 3, 4, 5, 6, 7]
 
-# Maps each tool binary to the stage that uses it and an install hint
+# Maps each tool binary to the stage that uses it and an install hint.
+# Stage 4 (asset collection) uses the bundled 'requests' library, not an
+# external binary, so it has no pre-flight entry.
 TOOL_MANIFEST: list[dict] = [
     # stage, binary, install hint
     {"stage": 1, "bin": "subfinder",        "hint": "go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"},
@@ -57,9 +60,9 @@ TOOL_MANIFEST: list[dict] = [
     {"stage": 2, "bin": "httpx",            "hint": "go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest"},
     {"stage": 3, "bin": "gospider",         "hint": "go install github.com/jaeles-project/gospider@latest"},
     {"stage": 3, "bin": "katana",           "hint": "go install github.com/projectdiscovery/katana/cmd/katana@latest"},
-    {"stage": 4, "bin": "cloud_enum",       "hint": "pip install cloud-enum  OR  https://github.com/initstring/cloud_enum"},
-    {"stage": 4, "bin": "pycroburst",        "hint": "python install_tools.py pycroburst",        "managed": True},
-    {"stage": 5, "bin": "linkedin2username", "hint": "python install_tools.py linkedin2username",   "managed": True},
+    {"stage": 5, "bin": "cloud_enum",       "hint": "pip install cloud-enum  OR  https://github.com/initstring/cloud_enum"},
+    {"stage": 5, "bin": "pycroburst",        "hint": "python install_tools.py pycroburst",        "managed": True},
+    {"stage": 6, "bin": "linkedin2username", "hint": "python install_tools.py linkedin2username",   "managed": True},
 ]
 
 
@@ -144,8 +147,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-d", "--domain",   required=True,  help="Target domain (e.g. example.com)")
     p.add_argument("-c", "--company",  default="",     help="Company name for LinkedIn enumeration")
     p.add_argument("--config",         default="config.yaml", help="Path to config.yaml")
-    p.add_argument("--stages",         default="1,2,3,4,5,6",
-                   help="Comma-separated stages to run: 1=subs,2=validate,3=js,4=cloud,5=email,6=report")
+    p.add_argument("--stages",         default="1,2,3,4,5,6,7",
+                   help="Comma-separated stages: 1=subs,2=validate,3=js,4=collect,5=cloud,6=email,7=report")
     p.add_argument("-o", "--output",      default="",  help="Override output directory")
     p.add_argument("-v", "--verbose",     action="store_true")
     p.add_argument("--skip-missing",      action="store_true",
@@ -191,6 +194,9 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
                   "urls_file": "", "resolved_file": "", "tool_results": []}
     js_data    = {"endpoints": [], "js_files": [], "api_paths": [],
                   "potential_secrets": [], "tool_results": []}
+    collect_data = {"root": "", "counts": {"downloaded": 0, "skipped": 0, "failed": 0},
+                    "by_asset": {}, "total_urls": 0, "js_count": 0,
+                    "manifest": [], "tool_results": []}
     cloud_data = {"assets": {}, "total": 0, "tool_results": []}
     email_data = {"emails": [], "usernames": [], "tool_results": []}
 
@@ -217,19 +223,24 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
             urls_file.write_text("", encoding="utf-8")
         js_data = await enumerate_js(urls_file, outdir, cfg)
 
-    # ── Stage 4 & 5 run in parallel (independent of each other) ──
+    # ── Stage 4: Asset Collection & JS Download (depends on Stage 3) ──
+    if 4 in stages:
+        collect_data = await collect_assets(outdir, cfg, js_data)
+
+    # ── Stage 5 & 6 run in parallel (independent of each other) ──
     async def _cloud():
-        return await enumerate_cloud(domain, outdir, cfg) if 4 in stages else cloud_data
+        return await enumerate_cloud(domain, outdir, cfg) if 5 in stages else cloud_data
 
     async def _email():
-        return await enumerate_emails(domain, company, outdir, cfg) if 5 in stages else email_data
+        return await enumerate_emails(domain, company, outdir, cfg) if 6 in stages else email_data
 
     cloud_data, email_data = await asyncio.gather(_cloud(), _email())
 
-    # ── Stage 6: Report ──
-    if 6 in stages:
+    # ── Stage 7: Report ──
+    if 7 in stages:
         report_path = generate_report(
-            domain, outdir, sub_data, val_data, js_data, cloud_data, email_data,
+            domain, outdir, sub_data, val_data, js_data,
+            collect_data, cloud_data, email_data,
         )
         log.info("HTML report: file://%s", report_path.resolve())
 
@@ -243,6 +254,8 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
     print(f"  Subdomains  : {len(sub_data['all'])}")
     print(f"  Live hosts  : {len(val_data['live_hosts'])}")
     print(f"  Endpoints   : {len(js_data['endpoints'])}")
+    print(f"  JS collected: {collect_data['counts'].get('downloaded', 0)} "
+          f"(across {len(collect_data['by_asset'])} assets)")
     print(f"  Cloud assets: {cloud_data['total']}")
     print(f"  Emails      : {len(email_data['emails'])}")
     print(f"  Secrets     : {len(js_data.get('potential_secrets', []))}")
@@ -256,12 +269,14 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
         "timestamp":   datetime.now().isoformat(),
         "duration_s":  round(elapsed, 2),
         "stats": {
-            "subdomains":   len(sub_data["all"]),
-            "live_hosts":   len(val_data["live_hosts"]),
-            "endpoints":    len(js_data["endpoints"]),
-            "cloud_assets": cloud_data["total"],
-            "emails":       len(email_data["emails"]),
-            "secrets":      len(js_data.get("potential_secrets", [])),
+            "subdomains":     len(sub_data["all"]),
+            "live_hosts":     len(val_data["live_hosts"]),
+            "endpoints":      len(js_data["endpoints"]),
+            "files_collected": collect_data["counts"].get("downloaded", 0),
+            "assets":         len(collect_data["by_asset"]),
+            "cloud_assets":   cloud_data["total"],
+            "emails":         len(email_data["emails"]),
+            "secrets":        len(js_data.get("potential_secrets", [])),
         },
     }
     (outdir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
