@@ -162,7 +162,6 @@ exposure:
     api_key: ""              # leakix.net API key (or set LEAKIX_API_KEY env var)
   gitminer:
     github_token: ""         # GitHub PAT, or set GITHUB_TOKEN env var
-    max_results: 100
   google_dorks:
     enabled: true            # needs the `claude` CLI with --chrome
     max_dorks: 20            # Google rate-limits aggressive automated dorking

@@ -26,8 +26,8 @@ import asyncio
 import csv
 import logging
 import os
+import time
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 from utils.runner import ToolResult, run_tool
@@ -438,7 +438,16 @@ def _leakix_api_key(cfg: dict) -> str:
 
 
 def _leakix_via_api(domain: str, outdir: Path, cfg: dict) -> dict:
-    """Query the LeakIX JSON API directly (Accept: application/json)."""
+    """
+    Query the LeakIX JSON API directly.
+
+    GET https://leakix.net/search?scope=leak&q=<domain>&page=<n>
+      headers: api-key, accept: application/json
+
+    Returns a JSON array of l9event objects. An empty body / `null` means
+    "no results" (not an error). Honors the ~1 req/s rate limit (HTTP 429 +
+    x-limited-for header) and paginates up to `max_pages`.
+    """
     if not _REQUESTS_AVAILABLE:
         return {"results": [], "count": 0, "method": "api", "skipped": True,
                 "skip_reason": "requests not installed"}
@@ -448,26 +457,79 @@ def _leakix_via_api(domain: str, outdir: Path, cfg: dict) -> dict:
         log.warning("LeakIX: no API key (set exposure.leakix.api_key or the "
                     "LEAKIX_API_KEY env var) — the API requires authentication")
 
-    url = _leakix_url(domain)
     headers = {"Accept": "application/json", "User-Agent": "AgentE-Recon/1.0"}
     if api_key:
         headers["api-key"] = api_key
 
-    try:
-        resp = requests.get(url, headers=headers, timeout=int(cfg.get("timeout", 60)))
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        log.warning("LeakIX (api) failed: %s", exc)
-        return {"results": [], "count": 0, "method": "api", "skipped": True,
-                "skip_reason": str(exc)[:200]}
+    timeout   = int(cfg.get("timeout", 60))
+    max_pages = int(cfg.get("max_pages", 3))
+    results: list[dict] = []
+    raw_pages: list[str] = []
+    skip_reason = ""
 
-    items = data if isinstance(data, list) else data.get("results", [])
-    results = _normalize_leakix(items)
-    (outdir / "leakix.json").write_text(resp.text, encoding="utf-8")
-    log.info("LeakIX (api): %d result(s)", len(results))
+    for page in range(max_pages):
+        params = {"scope": "leak", "q": domain, "page": page}
+        try:
+            resp = requests.get("https://leakix.net/search",
+                                params=params, headers=headers, timeout=timeout)
+        except Exception as exc:
+            log.warning("LeakIX (api) request failed on page %d: %s", page, exc)
+            skip_reason = str(exc)[:200]
+            break
+
+        # Respect the documented ~1 req/s limit: 429 + x-limited-for (ms)
+        if resp.status_code == 429:
+            wait_ms = int(resp.headers.get("x-limited-for", "1000") or "1000")
+            wait_s = min(max(wait_ms / 1000.0, 1.0), 10.0)
+            log.info("LeakIX: rate-limited, waiting %.1fs then retrying page %d", wait_s, page)
+            time.sleep(wait_s)
+            try:
+                resp = requests.get("https://leakix.net/search",
+                                    params=params, headers=headers, timeout=timeout)
+            except Exception as exc:
+                skip_reason = str(exc)[:200]
+                break
+
+        if resp.status_code == 401:
+            skip_reason = "401 Unauthorized — check the LeakIX API key"
+            log.warning("LeakIX (api): %s", skip_reason)
+            break
+        if resp.status_code >= 400:
+            skip_reason = f"HTTP {resp.status_code}"
+            log.warning("LeakIX (api): HTTP %d on page %d", resp.status_code, page)
+            break
+
+        raw_pages.append(resp.text)
+        body = (resp.text or "").strip()
+        if not body or body == "null":
+            break  # no (more) results — not an error
+
+        try:
+            data = resp.json()
+        except ValueError:
+            log.warning("LeakIX (api): non-JSON response on page %d (saved to leakix.json)", page)
+            skip_reason = "non-JSON response"
+            break
+
+        items = data if isinstance(data, list) else data.get("results", []) or []
+        if not items:
+            break
+        results.extend(_normalize_leakix(items))
+
+        if len(items) < 20:   # last page (LeakIX pages are ~20 events)
+            break
+        time.sleep(1.1)        # stay under the rate limit between pages
+
+    (outdir / "leakix.json").write_text(
+        "\n".join(raw_pages) if raw_pages else "[]", encoding="utf-8"
+    )
+
+    # Empty results with no error is a clean "nothing found", not a skip.
+    skipped = bool(skip_reason) and not results
+    if not skipped:
+        log.info("LeakIX (api): %d result(s)", len(results))
     return {"results": results, "count": len(results), "method": "api",
-            "skipped": False, "skip_reason": ""}
+            "skipped": skipped, "skip_reason": skip_reason}
 
 
 def _normalize_leakix(items: list) -> list[dict]:
@@ -500,10 +562,12 @@ async def _run_gitminer(domain: str, outdir: Path, cfg: dict, dorks_file: Path) 
     gm_dir.mkdir(exist_ok=True)
     csv_name = "downloaded_files.csv"
 
+    # Pass an ABSOLUTE dorks path: gitminer3 runs with cwd=gm_dir, and a relative
+    # path would not resolve there — gitminer would then treat the path string
+    # itself as a single literal dork ("Loaded 1 dork").
     cmd = [
         "gitminer3",
-        "-d", str(dorks_file),
-        "-m", str(cfg.get("max_results", 100)),
+        "-d", str(dorks_file.resolve()),
         "-o", csv_name,
         "--report",
     ]
@@ -515,37 +579,64 @@ async def _run_gitminer(domain: str, outdir: Path, cfg: dict, dorks_file: Path) 
     if token:
         env["GITHUB_TOKEN"] = token
 
+    if not token:
+        log.warning("Gitminer3: no GitHub token — the tool exits early without one. "
+                    "Set exposure.gitminer.github_token or the GITHUB_TOKEN env var.")
+
     result: ToolResult = await run_tool(
         cmd, "gitminer3", cwd=gm_dir, env=env,
         timeout=int(cfg.get("timeout", 1200)),
     )
 
+    # Always persist the tool's own output so runs are diagnosable.
+    log_path = gm_dir / "gitminer.log"
+    log_path.write_text(
+        f"$ {' '.join(cmd)}\n(cwd={gm_dir})\nreturncode={result.returncode}\n"
+        f"\n----- STDOUT -----\n{result.stdout}\n----- STDERR -----\n{result.stderr}\n",
+        encoding="utf-8",
+    )
+
+    if result.skipped:
+        log.warning("Gitminer3: skipped (%s)", result.skip_reason)
+    elif result.returncode != 0:
+        tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+        log.warning("Gitminer3: exited %d — see %s%s",
+                    result.returncode, log_path,
+                    ("  | " + " ".join(tail)) if tail else "")
+    else:
+        # Surface a short tail of stdout so rate-limit / 'no results' messages are visible
+        tail = [ln for ln in (result.stdout or "").strip().splitlines() if ln.strip()][-3:]
+        if tail:
+            log.info("Gitminer3 output: %s", " | ".join(tail))
+
+    # Findings: prefer the CSV summary, fall back to counting downloaded files.
     findings: list[dict] = []
     csv_path = gm_dir / csv_name
     if csv_path.exists():
         try:
             with open(csv_path, newline="", encoding="utf-8", errors="replace") as fh:
-                for row in csv.DictReader(fh):
-                    findings.append(row)
+                findings = list(csv.DictReader(fh))
         except Exception as exc:
             log.warning("Gitminer3: failed to parse CSV: %s", exc)
 
+    # Count any downloaded artifacts (excludes our own log/csv/markdown report).
+    skip_names = {csv_name, "gitminer.log"}
+    downloaded = [p for p in gm_dir.rglob("*")
+                  if p.is_file() and p.name not in skip_names and p.suffix.lower() != ".md"]
     report_md = next((p.name for p in gm_dir.glob("*.md")), "")
 
-    if result.skipped:
-        log.warning("Gitminer3: skipped (%s)", result.skip_reason)
-    elif token == "":
-        log.warning("Gitminer3: ran without a GitHub token — results may be empty "
-                    "(set exposure.gitminer.github_token or GITHUB_TOKEN)")
-
-    log.info("Gitminer3: %d finding(s) from %d dork(s)",
-             len(findings), sum(1 for _ in dorks_file.read_text(errors='replace').splitlines() if _.strip()))
+    count = len(findings) if findings else len(downloaded)
+    n_dorks = sum(1 for ln in dorks_file.read_text(errors="replace").splitlines() if ln.strip())
+    log.info("Gitminer3: %d finding(s) / %d downloaded file(s) from %d dork(s)  (log: %s)",
+             len(findings), len(downloaded), n_dorks, log_path.name)
 
     return {
         "findings": findings,
-        "count": len(findings),
+        "count": count,
+        "downloaded_files": len(downloaded),
         "csv_file": str(csv_path) if csv_path.exists() else "",
         "report_file": str(gm_dir / report_md) if report_md else "",
+        "log_file": str(log_path),
         "dorks_file": str(dorks_file),
         "skipped": result.skipped,
         "skip_reason": result.skip_reason,

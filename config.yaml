@@ -97,11 +97,11 @@ exposure:
     # API key: set here, or via the LEAKIX_API_KEY environment variable.
     api_key: ""
     timeout: 60           # HTTP timeout (seconds)
+    max_pages: 3          # pages to fetch (~20 events/page; ~1 req/s rate limit)
 
   gitminer:
     enabled: true
     github_token: ""      # GitHub PAT; falls back to GITHUB_TOKEN env var
-    max_results: 100      # -m: max results per dork
     timeout: 1200
 
   google_dorks:
