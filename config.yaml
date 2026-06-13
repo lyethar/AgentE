@@ -63,7 +63,7 @@ collect:
   # user_agent: "Mozilla/5.0 ..."   # override the download User-Agent
   prettier:
     enabled: true         # format downloaded JS with Prettier (npx/global prettier)
-    timeout: 600          # max seconds for the formatting pass
+                          # no time limit — large/minified bundles run to completion
 
 # Stage 5: Cloud Infrastructure
 cloud:
@@ -93,10 +93,10 @@ email:
 # Stage 7: Exposure & Secrets Discovery (LeakIX, Gitminer3, Google dorks)
 exposure:
   leakix:
-    method: chrome        # "chrome" (Claude + Chrome) or "api" (direct JSON API)
-    api_key: ""           # optional leakix.net API key (raises limits)
-    permission_mode: acceptEdits
-    timeout: 300
+    # Queried programmatically via the LeakIX JSON API.
+    # API key: set here, or via the LEAKIX_API_KEY environment variable.
+    api_key: ""
+    timeout: 60           # HTTP timeout (seconds)
 
   gitminer:
     enabled: true

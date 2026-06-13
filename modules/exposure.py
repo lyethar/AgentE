@@ -432,55 +432,24 @@ def _leakix_url(domain: str) -> str:
     return f"https://leakix.net/search?scope=leak&q={urllib.parse.quote(domain)}"
 
 
-def _leakix_via_chrome(domain: str, outdir: Path, cfg: dict) -> dict | None:
-    """Drive Chrome via Claude Code to read the rendered LeakIX result list."""
-    if not claude_browser.claude_available():
-        log.info("LeakIX: claude CLI not found — will try API fallback")
-        return None
-
-    url = _leakix_url(domain)
-    prompt = (
-        f"Open the URL {url} in Chrome. This is a LeakIX leak search for the "
-        f"domain '{domain}', performed as part of an AUTHORIZED security "
-        f"assessment. Wait for the results to finish loading, then extract every "
-        f"leak/exposure result entry shown on the page. For each entry capture: "
-        f"the affected host or subdomain, the IP address, the event type or "
-        f"plugin name, a short summary, and the date if present. "
-        f"Return ONLY a JSON array of objects with the keys: "
-        f"host, ip, event, summary, date. If there are no results, return []."
-    )
-    try:
-        envelope = claude_browser.run_claude_browser_task(
-            prompt,
-            cwd=str(outdir),
-            permission_mode=cfg.get("permission_mode", "acceptEdits"),
-            timeout=int(cfg.get("timeout", 300)),
-        )
-    except Exception as exc:
-        log.warning("LeakIX (chrome) failed: %s", exc)
-        return None
-
-    text = claude_browser.result_text(envelope)
-    parsed = claude_browser.extract_json(text)
-    if not isinstance(parsed, list):
-        log.warning("LeakIX (chrome): no JSON array in agent response")
-        return None
-
-    results = _normalize_leakix(parsed)
-    (outdir / "leakix.json").write_text(text, encoding="utf-8")
-    return {"results": results, "count": len(results), "method": "chrome",
-            "skipped": False, "skip_reason": ""}
+def _leakix_api_key(cfg: dict) -> str:
+    """API key from config, else the LEAKIX_API_KEY environment variable."""
+    return cfg.get("api_key", "") or os.environ.get("LEAKIX_API_KEY", "")
 
 
 def _leakix_via_api(domain: str, outdir: Path, cfg: dict) -> dict:
-    """LeakIX JSON API fallback (Accept: application/json)."""
+    """Query the LeakIX JSON API directly (Accept: application/json)."""
     if not _REQUESTS_AVAILABLE:
-        return {"results": [], "count": 0, "method": "none", "skipped": True,
-                "skip_reason": "no claude CLI and requests not installed"}
+        return {"results": [], "count": 0, "method": "api", "skipped": True,
+                "skip_reason": "requests not installed"}
+
+    api_key = _leakix_api_key(cfg)
+    if not api_key:
+        log.warning("LeakIX: no API key (set exposure.leakix.api_key or the "
+                    "LEAKIX_API_KEY env var) — the API requires authentication")
 
     url = _leakix_url(domain)
     headers = {"Accept": "application/json", "User-Agent": "AgentE-Recon/1.0"}
-    api_key = cfg.get("api_key", "")
     if api_key:
         headers["api-key"] = api_key
 
@@ -518,18 +487,8 @@ def _normalize_leakix(items: list) -> list[dict]:
 
 
 async def _run_leakix(domain: str, outdir: Path, cfg: dict) -> dict:
-    method = cfg.get("method", "chrome").lower()
-    log.info("LeakIX: querying leaks for %s (method=%s)", domain, method)
-
-    def _blocking() -> dict:
-        if method != "api":
-            chrome = _leakix_via_chrome(domain, outdir, cfg)
-            if chrome is not None:
-                log.info("LeakIX (chrome): %d result(s)", chrome["count"])
-                return chrome
-        return _leakix_via_api(domain, outdir, cfg)
-
-    return await asyncio.to_thread(_blocking)
+    log.info("LeakIX: querying leaks for %s via API", domain)
+    return await asyncio.to_thread(_leakix_via_api, domain, outdir, cfg)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

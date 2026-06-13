@@ -51,14 +51,14 @@ pip install -r requirements.txt
 | `pycroburst` | 5 | `python install_tools.py pycroburst` ← auto-installer |
 | `linkedin2username` | 6 | `python install_tools.py linkedin2username` ← auto-installer |
 | `gitminer3` | 7 | `python install_tools.py gitminer3` ← auto-installer (needs `GITHUB_TOKEN`) |
-| `claude` | 7 | [Claude Code CLI](https://claude.com/claude-code) with `--chrome` — drives LeakIX & Google dork lookups |
+| `claude` | 7 | [Claude Code CLI](https://claude.com/claude-code) with `--chrome` — drives Google dork lookups |
 | `prettier` | 4 | `npm install -g prettier` (optional — `npx` is used automatically if present) |
 
 Tools that are missing are skipped gracefully at runtime — you only get output for what's installed.
 
 > **Stage 4** (Asset Collection) needs no external binary — it uses the bundled `requests` library to download files. If `prettier` (or `npx`) is available it also pretty-prints the downloaded JavaScript for readable client-side review; if not, that step is skipped.
 >
-> **Stage 7** (Exposure) writes its full dork lists (`dorks.txt`, `google_dorks.txt`) regardless of which tools are present. LeakIX falls back to its JSON API (set an `api_key`) when the `claude` CLI is unavailable; Gitminer3 and Google dorking are skipped if their tools are missing.
+> **Stage 7** (Exposure) writes its full dork lists (`dorks.txt`, `google_dorks.txt`) regardless of which tools are present. LeakIX is queried programmatically via its JSON API (key from `exposure.leakix.api_key` or the `LEAKIX_API_KEY` env var); Gitminer3 and Google dorking are skipped if their tools are missing.
 
 ---
 
@@ -159,8 +159,7 @@ email:
 # Stage 7 — exposure / secret discovery
 exposure:
   leakix:
-    method: chrome           # "chrome" (Claude + Chrome) or "api"
-    api_key: ""              # leakix.net API key (required for the api method)
+    api_key: ""              # leakix.net API key (or set LEAKIX_API_KEY env var)
   gitminer:
     github_token: ""         # GitHub PAT, or set GITHUB_TOKEN env var
     max_results: 100
@@ -289,7 +288,7 @@ Pass `--skip-missing` to suppress the prompt and proceed automatically.
 - **bbot presets.** The default preset runs `subdomain-enum web-basic cloud-enum email-enum`. Adjust via `subdomains.bbot.extra_args` in config.
 - **Gitminer3 token.** GitHub code search needs a personal access token. Set `exposure.gitminer.github_token` or export `GITHUB_TOKEN`; without it, results will be empty.
 - **Google dorking.** Stage 7 drives the `claude` CLI with `--chrome` to run Google dorks. Google rate-limits automated searches, so `max_dorks` is capped by default and CAPTCHA'd queries are flagged for manual follow-up. Spend/iterations are bounded via `max_budget_usd` / `max_turns`.
-- **LeakIX.** The `chrome` method reads the rendered result page via Claude; the `api` method needs a leakix.net API key (`exposure.leakix.api_key`).
+- **LeakIX.** Queried programmatically via the LeakIX JSON API, which requires authentication. Provide a key via `exposure.leakix.api_key` or the `LEAKIX_API_KEY` environment variable.
 
 ---
 
@@ -312,6 +311,6 @@ AgentE/
 │   └── reporting.py         # Stage 8 — HTML report generator
 └── utils/
     ├── runner.py            # Async subprocess runner + local tool resolution
-    ├── claude_browser.py    # Claude Code + Chrome bridge (LeakIX / Google dorks)
+    ├── claude_browser.py    # Claude Code + Chrome bridge (Google dorks)
     └── logger.py            # Colour console + file logging
 ```

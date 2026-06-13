@@ -244,15 +244,15 @@ def _run_prettier(collected_root: Path, cfg: dict) -> dict:
         return info
 
     info["available"] = True
-    timeout = int(pcfg.get("timeout", 600))
     # Prettier prints each rewritten file path to stdout; glob is relative to cwd.
+    # No timeout — large/minified bundles can take a while and we let it finish.
     cmd = base + ["--write", "--no-error-on-unmatched-pattern",
                   "--log-level", "warn", "**/*.js"]
-    log.info("Collector: formatting downloaded JS with Prettier ...")
+    log.info("Collector: formatting downloaded JS with Prettier (no time limit) ...")
     try:
         proc = subprocess.run(
             cmd, cwd=str(collected_root),
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True,
         )
         formatted = sum(
             1 for ln in (proc.stdout or "").splitlines()
@@ -266,9 +266,6 @@ def _run_prettier(collected_root: Path, cfg: dict) -> dict:
                         proc.returncode, info["skip_reason"])
         else:
             log.info("Collector: Prettier formatted %d JS file(s)", formatted)
-    except subprocess.TimeoutExpired:
-        info["skip_reason"] = f"timed out after {timeout}s"
-        log.warning("Collector: Prettier timed out after %ds", timeout)
     except Exception as exc:
         info["skip_reason"] = str(exc)
         log.warning("Collector: Prettier failed: %s", exc)
