@@ -29,11 +29,13 @@ from modules.cloud      import enumerate_cloud
 from modules.collector  import collect_assets
 from modules.email_enum import enumerate_emails
 from modules.exposure   import enumerate_exposure
+from modules.ip_resolve import resolve_ips
 from modules.js_enum    import enumerate_js
 from modules.reporting  import generate_report
 from modules.subdomains import enumerate_subdomains
 from modules.validation import validate_subdomains
 from utils.logger       import setup_logger
+from utils.runner       import progress_monitor
 
 BANNER = r"""
   ___                    _   _____
@@ -65,7 +67,8 @@ TOOL_MANIFEST: list[dict] = [
     {"stage": 5, "bin": "pycroburst",        "hint": "python install_tools.py pycroburst",        "managed": True},
     {"stage": 6, "bin": "linkedin2username", "hint": "python install_tools.py linkedin2username",   "managed": True},
     {"stage": 7, "bin": "gitminer3",        "hint": "python install_tools.py gitminer3",          "managed": True},
-    {"stage": 7, "bin": "claude",           "hint": "Claude Code CLI (with --chrome) — used for LeakIX & Google dork lookups; https://claude.com/claude-code"},
+    # Google dorking (stage 7) uses Playwright (a Python package, not a PATH
+    # binary): pip install playwright && playwright install chromium
 ]
 
 
@@ -149,6 +152,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("-d", "--domain",   required=True,  help="Target domain (e.g. example.com)")
     p.add_argument("-c", "--company",  default="",     help="Company name for LinkedIn enumeration")
+    p.add_argument("-i", "--ip-list",  default="",
+                   help="Optional file of IPs/CIDRs to reverse-resolve and validate (FQDN/FCrDNS)")
     p.add_argument("--config",         default="config.yaml", help="Path to config.yaml")
     p.add_argument("--stages",         default="1,2,3,4,5,6,7,8",
                    help="Comma-separated stages: 1=subs,2=validate,3=js,4=collect,"
@@ -203,6 +208,8 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
                     "manifest": [], "tool_results": []}
     cloud_data = {"assets": {}, "total": 0, "tool_results": []}
     email_data = {"emails": [], "usernames": [], "tool_results": []}
+    ip_data    = {"results": [], "errors": [], "total_ips": 0, "resolved": 0,
+                  "fqdns": [], "validated_fqdns": [], "tool_results": []}
     exposure_data = {"leakix": {"results": [], "count": 0},
                      "gitminer": {"findings": [], "count": 0},
                      "google_dorks": {"findings": [], "count": 0, "dorks_total": 0},
@@ -210,9 +217,35 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
 
     t0 = time.monotonic()
 
+    # Background heartbeat: report which tools are still executing. Tools run
+    # without a forced timeout (see config), so this is how long-running tools
+    # stay observable while a stage waits for them to finish.
+    interval = cfg.get("global", {}).get("progress_interval", 30)
+    monitor_task = asyncio.create_task(progress_monitor(interval))
+
+    # ── Optional pre-step: IP → FQDN resolution (--ip-list) ──
+    if args.ip_list:
+        ip_data = await resolve_ips(Path(args.ip_list), outdir, cfg)
+
     # ── Stage 1: Subdomains ──
     if 1 in stages:
         sub_data = await enumerate_subdomains(domain, outdir, cfg)
+
+    # Fold IP-derived (FCrDNS-validated) FQDNs into the subdomain pool so they
+    # flow through validation / crawling and appear in the report.
+    new_fqdns = ip_data.get("validated_fqdns", [])
+    if new_fqdns and cfg.get("ip_resolve", {}).get("feed_subdomains", True):
+        combined = sorted(set(sub_data.get("all", [])) | set(new_fqdns))
+        added = len(combined) - len(set(sub_data.get("all", [])))
+        sub_data["all"] = combined
+        sub_data.setdefault("by_tool", {})["ptr"] = sorted(
+            set(sub_data.get("by_tool", {}).get("ptr", [])) | set(new_fqdns)
+        )
+        merged = Path(sub_data.get("merged_file") or (outdir / "subdomains_all.txt"))
+        existing = set(merged.read_text(errors="replace").split()) if merged.exists() else set()
+        merged.write_text("\n".join(sorted(existing | set(combined))), encoding="utf-8")
+        sub_data["merged_file"] = str(merged)
+        log.info("Merged %d IP-derived FQDN(s) into the subdomain pool", added)
 
     # ── Stage 2: Validation (depends on Stage 1) ──
     if 2 in stages:
@@ -252,9 +285,16 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
     if 8 in stages:
         report_path = generate_report(
             domain, outdir, sub_data, val_data, js_data,
-            collect_data, cloud_data, email_data, exposure_data,
+            collect_data, cloud_data, email_data, exposure_data, ip_data,
         )
         log.info("HTML report: file://%s", report_path.resolve())
+
+    # Stop the progress heartbeat now that all stages are done.
+    monitor_task.cancel()
+    try:
+        await monitor_task
+    except asyncio.CancelledError:
+        pass
 
     elapsed = time.monotonic() - t0
 
@@ -263,6 +303,9 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
     print()
     print(sep)
     print(f"  Target      : {domain}")
+    if args.ip_list:
+        print(f"  IPs resolved: {ip_data.get('resolved', 0)}/{ip_data.get('total_ips', 0)} "
+              f"(validated FQDNs: {len(ip_data.get('validated_fqdns', []))})")
     print(f"  Subdomains  : {len(sub_data['all'])}")
     print(f"  Live hosts  : {len(val_data['live_hosts'])}")
     print(f"  Endpoints   : {len(js_data['endpoints'])}")
@@ -285,6 +328,9 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
         "timestamp":   datetime.now().isoformat(),
         "duration_s":  round(elapsed, 2),
         "stats": {
+            "ips_total":      ip_data.get("total_ips", 0),
+            "ips_resolved":   ip_data.get("resolved", 0),
+            "ip_fqdns_validated": len(ip_data.get("validated_fqdns", [])),
             "subdomains":     len(sub_data["all"]),
             "live_hosts":     len(val_data["live_hosts"]),
             "endpoints":      len(js_data["endpoints"]),

@@ -12,9 +12,9 @@ Three independent components, all scoped to the target organization:
                   generated from a curated credential-leak dork list with the
                   target domain appended to every line so searches stay in scope.
 
-  3. Google     — orchestrates Claude Code + Chrome to run a curated set of
-     Dorks        Google dorks (substituting the target domain/company), records
-                  which return hits, and folds the findings into the HTML report.
+  3. Google     — drives a real browser (Playwright) through a curated set of
+     Dorks        Google dorks (substituting the target domain/company), scrapes
+                  and catalogs the result URLs, and folds findings into the report.
 
 Everything is best-effort: missing tools, a missing `claude` CLI, or a
 rate-limited search degrade to "skipped" rather than failing the pipeline.
@@ -31,7 +31,7 @@ import urllib.parse
 from pathlib import Path
 
 from utils.runner import ToolResult, run_tool
-from utils import claude_browser
+from utils import browser_search
 
 log = logging.getLogger("agente.exposure")
 
@@ -645,81 +645,63 @@ async def _run_gitminer(domain: str, outdir: Path, cfg: dict, dorks_file: Path) 
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3. Google dorks via Claude + Chrome
+# 3. Google dorks via a real browser (Playwright)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _google_dorks_blocking(dorks: list[str], outdir: Path, cfg: dict) -> dict:
-    if not cfg.get("enabled", True):
-        return {"findings": [], "count": 0, "dorks_run": 0,
-                "skipped": True, "skip_reason": "disabled in config"}
-    if not claude_browser.claude_available():
-        log.warning("Google dorks: claude CLI not found — skipping "
-                    "(full dork list still written to google_dorks.txt)")
-        return {"findings": [], "count": 0, "dorks_run": 0,
-                "skipped": True, "skip_reason": "claude CLI not found"}
-
-    max_dorks  = int(cfg.get("max_dorks", 20))
-    batch_size = max(1, int(cfg.get("batch_size", 5)))
-    subset     = dorks[:max_dorks] if max_dorks > 0 else dorks
-
-    findings: list[dict] = []
-    run_count = 0
-    for start in range(0, len(subset), batch_size):
-        batch = subset[start:start + batch_size]
-        numbered = "\n".join(f"{i+1}. {d}" for i, d in enumerate(batch))
-        prompt = (
-            "You are assisting an AUTHORIZED security assessment. For each Google "
-            "search query below, open "
-            "https://www.google.com/search?q=<URL-encoded query> in Chrome, let "
-            "the page load, and record: whether any results were returned, the top "
-            "up-to-3 result URLs, and a one-line note on anything sensitive "
-            "(exposed files, admin panels, secrets, error leaks, etc.). If Google "
-            "presents a CAPTCHA or blocks the search, set note to 'captcha' for "
-            "that query and continue to the next. Return ONLY a JSON array, one "
-            "object per query, with keys: dork (string), results_found (boolean), "
-            "top_results (array of strings), note (string).\n\nQueries:\n"
-            + numbered
-        )
-        try:
-            envelope = claude_browser.run_claude_browser_task(
-                prompt,
-                cwd=str(outdir),
-                permission_mode=cfg.get("permission_mode", "acceptEdits"),
-                timeout=int(cfg.get("timeout", 600)),
-                max_turns=cfg.get("max_turns"),
-                max_budget_usd=cfg.get("max_budget_usd"),
-            )
-        except Exception as exc:
-            log.warning("Google dorks: batch %d failed: %s", start // batch_size + 1, exc)
-            continue
-
-        run_count += len(batch)
-        parsed = claude_browser.extract_json(claude_browser.result_text(envelope))
-        if isinstance(parsed, list):
-            for entry in parsed:
-                if isinstance(entry, dict):
-                    findings.append({
-                        "dork": str(entry.get("dork", "")),
-                        "results_found": bool(entry.get("results_found", False)),
-                        "top_results": entry.get("top_results", []) or [],
-                        "note": str(entry.get("note", "")),
-                    })
-        log.info("Google dorks: batch %d/%d processed",
-                 start // batch_size + 1, (len(subset) + batch_size - 1) // batch_size)
-
     import json as _json
+
+    if not cfg.get("enabled", True):
+        return {"findings": [], "count": 0, "dorks_run": 0, "url_count": 0,
+                "urls": [], "blocked": 0, "skipped": True,
+                "skip_reason": "disabled in config"}
+    if not browser_search.playwright_available():
+        log.warning("Google dorks: Playwright not installed — skipping (full dork "
+                    "list still written to google_dorks.txt). Install with: "
+                    "pip install playwright && playwright install chromium")
+        return {"findings": [], "count": 0, "dorks_run": 0, "url_count": 0,
+                "urls": [], "blocked": 0, "skipped": True,
+                "skip_reason": "playwright not installed"}
+
+    log.info("Google dorks: running all %d dork(s) via Playwright (headless=%s)",
+             len(dorks), cfg.get("headless", True))
+
+    def _progress(i: int, total: int, entry: dict) -> None:
+        if i % 10 == 0 or i == total:
+            log.info("Google dorks: %d/%d processed", i, total)
+
+    results, err = browser_search.google_search_batch(dorks, cfg, log_progress=_progress)
+    if err:
+        log.warning("Google dorks: %s", err)
+        return {"findings": [], "count": 0, "dorks_run": 0, "url_count": 0,
+                "urls": [], "blocked": 0, "skipped": True, "skip_reason": err}
+
+    # Report rows keep the lean shape; full per-query detail goes to JSON.
+    findings = [{"dork": r["dork"], "results_found": r["results_found"],
+                 "top_results": r["top_results"], "note": r["note"]}
+                for r in results]
+
+    # Catalog every unique result URL discovered across all dorks.
+    all_urls = sorted({u for r in results for u in r.get("all_results", [])})
+
     (outdir / "google_dork_findings.json").write_text(
-        _json.dumps(findings, indent=2), encoding="utf-8"
-    )
-    hits = sum(1 for f in findings if f.get("results_found"))
-    log.info("Google dorks: %d/%d queries run, %d returned results",
-             run_count, len(subset), hits)
-    return {"findings": findings, "count": hits, "dorks_run": run_count,
+        _json.dumps(results, indent=2), encoding="utf-8")
+    (outdir / "google_dork_urls.txt").write_text(
+        "\n".join(all_urls), encoding="utf-8")
+
+    hits    = sum(1 for r in results if r.get("results_found"))
+    blocked = sum(1 for r in results if r.get("note") == "captcha")
+    log.info("Google dorks: %d/%d queries returned results, %d URLs cataloged, %d blocked",
+             hits, len(results), len(all_urls), blocked)
+
+    return {"findings": findings, "count": hits, "dorks_run": len(results),
+            "urls": all_urls, "url_count": len(all_urls), "blocked": blocked,
             "skipped": False, "skip_reason": ""}
 
 
 async def _run_google_dorks(dorks: list[str], outdir: Path, cfg: dict) -> dict:
-    log.info("Google dorks: orchestrating Claude + Chrome over %d dork(s)", len(dorks))
+    # Synchronous Playwright runs in a worker thread (no event loop there).
+    log.info("Google dorks: launching browser over %d dork(s)", len(dorks))
     return await asyncio.to_thread(_google_dorks_blocking, dorks, outdir, cfg)
 
 

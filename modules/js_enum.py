@@ -36,7 +36,7 @@ async def run_gospider(urls_file: Path, outdir: Path, cfg: dict) -> ToolResult:
         "--timeout", str(cfg.get("timeout_per_req", 15)),
         *cfg.get("extra_args", []),
     ]
-    return await run_tool(cmd, "gospider", timeout=cfg.get("timeout", 600))
+    return await run_tool(cmd, "gospider", timeout=cfg.get("timeout"))
 
 
 async def run_katana(urls_file: Path, outdir: Path, cfg: dict) -> ToolResult:
@@ -54,7 +54,7 @@ async def run_katana(urls_file: Path, outdir: Path, cfg: dict) -> ToolResult:
         "-silent",
         *cfg.get("extra_args", []),
     ]
-    return await run_tool(cmd, "katana", timeout=cfg.get("timeout", 600))
+    return await run_tool(cmd, "katana", timeout=cfg.get("timeout"))
 
 
 def _collect_gospider_urls(outdir: Path) -> set[str]:

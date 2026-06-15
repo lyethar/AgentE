@@ -89,7 +89,7 @@ async def run_linkedin2username(company: str, domain: str, outdir: Path, cfg: di
     ]
     if cfg.get("cookie"):
         cmd += ["-s", cfg["cookie"]]
-    return await run_tool(cmd, "linkedin2username", timeout=cfg.get("timeout", 300))
+    return await run_tool(cmd, "linkedin2username", timeout=cfg.get("timeout"))
 
 
 def _parse_usernames(outdir: Path) -> list[str]:

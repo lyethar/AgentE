@@ -25,7 +25,7 @@ async def run_dnsgen(subdomains_file: Path, outdir: Path, cfg: dict) -> ToolResu
     cmd = [c for c in cmd if c]
     result = await run_tool(
         cmd, "dnsgen",
-        timeout=cfg.get("timeout", 120),
+        timeout=cfg.get("timeout"),
     )
     if not result.skipped and result.stdout:
         # dnsgen writes to stdout
@@ -49,7 +49,7 @@ async def run_puredns(input_file: Path, outdir: Path, cfg: dict) -> ToolResult:
         *(["-r", resolvers] if resolvers else []),
         *cfg.get("extra_args", []),
     ]
-    return await run_tool(cmd, "puredns", timeout=cfg.get("timeout", 600))
+    return await run_tool(cmd, "puredns", timeout=cfg.get("timeout"))
 
 
 async def run_httpx(input_file: Path, outdir: Path, cfg: dict) -> ToolResult:
@@ -69,7 +69,7 @@ async def run_httpx(input_file: Path, outdir: Path, cfg: dict) -> ToolResult:
         "-timeout", str(cfg.get("probe_timeout", 10)),
         *cfg.get("extra_args", []),
     ]
-    return await run_tool(cmd, "httpx", timeout=cfg.get("timeout", 600))
+    return await run_tool(cmd, "httpx", timeout=cfg.get("timeout"))
 
 
 def _parse_httpx_json(outdir: Path) -> list[dict]:

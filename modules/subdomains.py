@@ -37,13 +37,13 @@ async def run_subfinder(domain: str, outdir: Path, cfg: dict) -> ToolResult:
         "-all",
         *cfg.get("extra_args", []),
     ]
-    return await run_tool(cmd, "subfinder", timeout=cfg.get("timeout", 300))
+    return await run_tool(cmd, "subfinder", timeout=cfg.get("timeout"))
 
 
 async def run_subscraper(domain: str, outdir: Path, cfg: dict) -> ToolResult:
     out_file = outdir / "subscraper.txt"
     cmd = ["subscraper", "-d", domain, "-o", str(out_file), *cfg.get("extra_args", [])]
-    return await run_tool(cmd, "subscraper", timeout=cfg.get("timeout", 300))
+    return await run_tool(cmd, "subscraper", timeout=cfg.get("timeout"))
 
 
 async def run_bbot(domain: str, outdir: Path, cfg: dict) -> ToolResult:
@@ -56,7 +56,7 @@ async def run_bbot(domain: str, outdir: Path, cfg: dict) -> ToolResult:
         "--silent",
         *cfg.get("extra_args", []),
     ]
-    return await run_tool(cmd, "bbot", timeout=cfg.get("timeout", 600))
+    return await run_tool(cmd, "bbot", timeout=cfg.get("timeout"))
 
 
 def _parse_bbot_output(outdir: Path, domain: str) -> set[str]:

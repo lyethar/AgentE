@@ -129,6 +129,12 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
   </div>
   <div class="col-6 col-md-2">
     <div class="stat-card p-3 text-center">
+      <div class="stat-value">{total_ip_fqdns}</div>
+      <div class="stat-label">IP&rarr;FQDN</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="stat-card p-3 text-center">
       <div class="stat-value">{total_exposures}</div>
       <div class="stat-label">Exposures</div>
     </div>
@@ -167,6 +173,7 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
 <ul class="nav nav-pills mb-3" id="mainTabs">
   <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#tab-subs">Subdomains</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-live">Live Hosts</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-ip">IP &rarr; FQDN</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-ep">Endpoints</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-collected">Collected Assets</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-cloud">Cloud</button></li>
@@ -195,6 +202,24 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
     <table id="tblLive" class="table table-sm w-100">
       <thead><tr><th>URL</th><th>Status</th><th>Title</th><th>Tech</th><th>IP</th></tr></thead>
       <tbody>{rows_live}</tbody>
+    </table>
+  </div>
+</div>
+
+<!-- IP -> FQDN -->
+<div class="tab-pane fade" id="tab-ip">
+  <div class="section-card p-3">
+    <div class="section-title">IP &rarr; FQDN Resolution &amp; Validation</div>
+    <p class="text-muted small">
+      Reverse-DNS (PTR) lookups for the supplied IPs, validated with
+      forward-confirmed reverse DNS (FCrDNS). Resolved:
+      <strong class="text-info">{ip_resolved}/{ip_total}</strong> &nbsp;|&nbsp;
+      FCrDNS-validated FQDNs: <strong class="text-success">{ip_validated}</strong>.
+      Validated names are folded into the Subdomains tab (source <code>ptr</code>).
+    </p>
+    <table id="tblIp" class="table table-sm w-100">
+      <thead><tr><th>IP</th><th>FQDN(s)</th><th>Validated</th><th>Status</th></tr></thead>
+      <tbody>{rows_ip}</tbody>
     </table>
   </div>
 </div>
@@ -374,7 +399,7 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
 <script>
 $(function() {{
   const dtOpts = {{ pageLength: 25, lengthMenu: [25, 50, 100, 500] }};
-  ['#tblSubs','#tblLive','#tblEp','#tblJs','#tblApi','#tblCollected',
+  ['#tblSubs','#tblLive','#tblIp','#tblEp','#tblJs','#tblApi','#tblCollected',
    '#tblS3','#tblAzure','#tblGcp','#tblFunc',
    '#tblEmails','#tblUsers','#tblLeakix','#tblGithub','#tblGoogle','#tblSecrets'].forEach(id => {{
     if ($(id).length) $(id).DataTable(dtOpts);
@@ -518,9 +543,11 @@ def generate_report(
     cloud_data:    dict,
     email_data:    dict,
     exposure_data: dict | None = None,
+    ip_data:       dict | None = None,
 ) -> Path:
     log.info("=== Stage 8: Generating HTML Report ===")
     exposure_data = exposure_data or {}
+    ip_data = ip_data or {}
 
     # ── Subdomains ──
     subs_by_tool: dict[str, list] = sub_data.get("by_tool", {})
@@ -663,6 +690,22 @@ def generate_report(
         )
     rows_google = "\n".join(rows_google_parts)
 
+    # ── IP → FQDN ──
+    ip_results = ip_data.get("results", [])
+    rows_ip_parts = []
+    for r in ip_results:
+        if not isinstance(r, dict):
+            continue
+        fqdns = ", ".join(r.get("fqdns", []) or [])
+        valid = ('<span class="text-success">yes</span>'
+                 if r.get("validated") else '<span class="text-muted">no</span>')
+        rows_ip_parts.append(
+            f'<tr><td>{_esc(str(r.get("ip","")))}</td>'
+            f'<td>{_esc(fqdns)}</td><td>{valid}</td>'
+            f'<td class="small">{_esc(str(r.get("status","")))}</td></tr>'
+        )
+    rows_ip = "\n".join(rows_ip_parts)
+
     # ── Charts ──
     all_tool_results = (
         sub_data.get("tool_results", [])
@@ -672,6 +715,7 @@ def generate_report(
         + cloud_data.get("tool_results", [])
         + email_data.get("tool_results", [])
         + exposure_data.get("tool_results", [])
+        + ip_data.get("tool_results", [])
     )
 
     html = _HTML_TEMPLATE.format(
@@ -687,6 +731,11 @@ def generate_report(
         rows_collected=rows_collected,
         total_cloud=cloud_data.get("total", 0),
         total_emails=len(all_emails),
+        total_ip_fqdns=len(ip_data.get("validated_fqdns", [])),
+        ip_total=ip_data.get("total_ips", 0),
+        ip_resolved=ip_data.get("resolved", 0),
+        ip_validated=len(ip_data.get("validated_fqdns", [])),
+        rows_ip=rows_ip,
         total_exposures=exposure_data.get("total", 0),
         total_secrets=len(secrets),
         total_js=len(js_files),

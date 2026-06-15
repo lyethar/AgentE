@@ -1,5 +1,9 @@
 # AgentE — Enumeration Orchestrator Configuration
 # ─────────────────────────────────────────────────
+# Per-tool `timeout` is in seconds. Set it to 0 (or remove it) for NO timeout —
+# the tool then runs to completion before the next stage starts. Long-running
+# tools (bbot, cloud_enum, …) should use 0 so they are never killed mid-scan.
+# The orchestrator logs which tools are still running every `progress_interval`.
 
 # Stage 1: Subdomain Enumeration
 subdomains:
@@ -13,7 +17,7 @@ subdomains:
     extra_args: []
 
   bbot:
-    timeout: 600
+    timeout: 0            # no timeout — bbot runs many modules and can take a long time
     extra_args: []
     # extra_args: ["-m", "crtsh", "dnsx", "hackertarget", "columbus"]
 
@@ -68,12 +72,12 @@ collect:
 # Stage 5: Cloud Infrastructure
 cloud:
   cloud_enum:
-    timeout: 600
+    timeout: 0            # no timeout — cloud_enum brute-forces many providers
     extra_args: []
     # extra_args: ["-l", "/opt/wordlists/cloud_enum_mutations.txt"]
 
   pycroburst:
-    timeout: 600
+    timeout: 0            # no timeout — Azure brute-force can run long
     mutations: 200
     wordlist: ""          # path to custom wordlist
     extra_args: []
@@ -105,15 +109,24 @@ exposure:
     timeout: 1200
 
   google_dorks:
-    enabled: true         # requires the `claude` CLI with --chrome
-    max_dorks: 20         # cap how many dorks to run (0 = all; Google rate-limits)
-    batch_size: 5         # dorks per Claude browser task
-    permission_mode: acceptEdits
-    max_turns: 30         # bound agent iterations per batch
-    max_budget_usd: 2.0   # bound spend per batch
-    timeout: 600          # per-batch timeout (seconds)
+    # Runs ALL dorks through a real browser via Playwright (no API key, no Claude).
+    # Setup: pip install playwright && playwright install chromium
+    enabled: true
+    headless: true        # set false to watch the browser / reduce blocking
+    min_delay: 5          # min seconds between queries (throttle to avoid CAPTCHAs)
+    max_delay: 15         # max seconds between queries
+    nav_timeout: 30       # per-search navigation timeout (seconds)
+    user_data_dir: ""     # optional: reuse a real Chrome profile dir to lower blocking
+
+# Optional pre-step: IP -> FQDN resolution (enabled with --ip-list / -i)
+ip_resolve:
+  workers: 20             # concurrent reverse-DNS lookups
+  timeout: 5              # per-lookup DNS timeout (seconds)
+  feed_subdomains: true   # fold FCrDNS-validated FQDNs into the subdomain pool
+  max_cidr_hosts: 4096    # safety cap when expanding a CIDR range
 
 # Global settings
 global:
   max_concurrency: 4      # max parallel tool runs
   output_base: "output"   # base directory for all run outputs
+  progress_interval: 30   # seconds between "tools still running" heartbeats (0 to disable)

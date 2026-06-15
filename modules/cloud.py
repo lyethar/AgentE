@@ -40,7 +40,7 @@ async def run_cloud_enum(keyword: str, outdir: Path, cfg: dict) -> ToolResult:
         "--logfile", str(out_file),
         *cfg.get("extra_args", []),
     ]
-    return await run_tool(cmd, "cloud_enum", timeout=cfg.get("timeout", 600))
+    return await run_tool(cmd, "cloud_enum", timeout=cfg.get("timeout"))
 
 
 async def run_pycroburst(keyword: str, outdir: Path, cfg: dict) -> ToolResult:
@@ -58,7 +58,7 @@ async def run_pycroburst(keyword: str, outdir: Path, cfg: dict) -> ToolResult:
         *(["-b", wordlist] if wordlist else []),
         *cfg.get("extra_args", []),
     ]
-    result = await run_tool(cmd, "pyCroBurst", timeout=cfg.get("timeout", 600))
+    result = await run_tool(cmd, "pyCroBurst", timeout=cfg.get("timeout"))
     # pyCroBurst writes to stdout — persist it
     if not result.skipped and result.stdout:
         out_file.write_text(result.stdout, encoding="utf-8")
