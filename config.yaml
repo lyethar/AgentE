@@ -109,14 +109,12 @@ exposure:
     timeout: 1200
 
   google_dorks:
-    # Runs ALL dorks through a real browser via Playwright (no API key, no Claude).
-    # Setup: pip install playwright && playwright install chromium
-    enabled: true
-    headless: true        # set false to watch the browser / reduce blocking
-    min_delay: 5          # min seconds between queries (throttle to avoid CAPTCHAs)
-    max_delay: 15         # max seconds between queries
-    nav_timeout: 30       # per-search navigation timeout (seconds)
-    user_data_dir: ""     # optional: reuse a real Chrome profile dir to lower blocking
+    enabled: true         # requires the `claude` CLI with --chrome
+    batch_size: 5         # dorks per Claude browser task (ALL dorks are always run)
+    permission_mode: acceptEdits
+    max_turns: 30         # bound agent iterations per batch
+    max_budget_usd: 2.0   # bound spend per batch
+    timeout: 600          # per-batch timeout (seconds)
 
 # Optional pre-step: IP -> FQDN resolution (enabled with --ip-list / -i)
 ip_resolve:

@@ -20,7 +20,7 @@ Target Domain
     ├─ Stage 5 ─ Cloud Infrastructure     (cloud_enum → pycroburst)  ─┐ parallel
     ├─ Stage 6 ─ Email Intelligence        (phonebooks.cz · linkedin2username) ─┘
     │
-    ├─ Stage 7 ─ Exposure & Secrets       (LeakIX · Gitminer3 · Google dorks via a real browser)
+    ├─ Stage 7 ─ Exposure & Secrets       (LeakIX · Gitminer3 · Google dorks via Claude + Chrome)
     │
     └─ Stage 8 ─ HTML Report
 ```
@@ -51,14 +51,14 @@ pip install -r requirements.txt
 | `pycroburst` | 5 | `python install_tools.py pycroburst` ← auto-installer |
 | `linkedin2username` | 6 | `python install_tools.py linkedin2username` ← auto-installer |
 | `gitminer3` | 7 | `python install_tools.py gitminer3` ← auto-installer (needs `GITHUB_TOKEN`) |
-| `playwright` | 7 | `pip install playwright && playwright install chromium` — drives the browser for Google dorking |
+| `claude` | 7 | [Claude Code CLI](https://claude.com/claude-code) with `--chrome` — drives Google dork lookups |
 | `prettier` | 4 | `npm install -g prettier` (optional — `npx` is used automatically if present) |
 
 Tools that are missing are skipped gracefully at runtime — you only get output for what's installed.
 
 > **Stage 4** (Asset Collection) needs no external binary — it uses the bundled `requests` library to download files. If `prettier` (or `npx`) is available it also pretty-prints the downloaded JavaScript for readable client-side review; if not, that step is skipped.
 >
-> **Stage 7** (Exposure) writes its full dork lists (`dorks.txt`, `google_dorks.txt`) regardless of which tools are present. LeakIX is queried programmatically via its JSON API (key from `exposure.leakix.api_key` or the `LEAKIX_API_KEY` env var); Gitminer3 is skipped if missing; Google dorking is skipped if Playwright isn't installed.
+> **Stage 7** (Exposure) writes its full dork lists (`dorks.txt`, `google_dorks.txt`) regardless of which tools are present. LeakIX is queried programmatically via its JSON API (key from `exposure.leakix.api_key` or the `LEAKIX_API_KEY` env var); Gitminer3 and Google dorking are skipped if their tools are missing.
 
 ---
 
@@ -166,11 +166,9 @@ exposure:
   gitminer:
     github_token: ""         # GitHub PAT, or set GITHUB_TOKEN env var
   google_dorks:
-    enabled: true            # runs ALL dorks via Playwright (a real browser; no key)
-    headless: true           # set false to watch the browser / reduce blocking
-    min_delay: 5             # throttle between queries (seconds) to avoid CAPTCHAs
-    max_delay: 15
-    user_data_dir: ""        # optional: reuse a real Chrome profile to lower blocking
+    enabled: true            # needs the `claude` CLI with --chrome (runs ALL dorks)
+    batch_size: 5            # dorks per Claude browser task
+    max_budget_usd: 2.0      # spend cap per Claude browser batch
 
 # Optional IP -> FQDN resolution (--ip-list / -i)
 ip_resolve:
@@ -218,8 +216,7 @@ output/example.com/20240501_130000/
 ├── dorks.txt                 # Stage 7 — Gitminer3 dorks (domain-scoped)
 ├── google_dorks.txt          # Stage 7 — Google dork list (domain/company-scoped)
 ├── leakix.json               # Stage 7 — raw LeakIX results
-├── google_dork_findings.json # Stage 7 — per-dork results (browser-scraped)
-├── google_dork_urls.txt      # Stage 7 — cataloged unique result URLs (all dorks)
+├── google_dork_findings.json # Stage 7 — Google dork findings (Claude + Chrome)
 ├── gitminer/                 # Stage 7 — Gitminer3 downloads, CSV + markdown report
 ├── report_example.com.html   # interactive HTML report
 ├── summary.json              # machine-readable stats
@@ -262,7 +259,7 @@ All tables have live search, column sort, and pagination.
 | 4 | Asset Collection | `requests` (built-in), Prettier (optional) | Stage 3 crawl output | `collected/<asset>/{js,json,config}/`, `asset_manifest.json` |
 | 5 | Cloud Infrastructure | cloud_enum, pycroburst | domain keyword | cloud asset lists |
 | 6 | Email Intelligence | phonebooks.cz API, linkedin2username | domain, company | `emails_all.txt`, `usernames_all.txt` |
-| 7 | Exposure & Secrets | LeakIX, Gitminer3, Google dorks (Playwright browser) | domain, company | `dorks.txt`, `google_dorks.txt`, `google_dork_urls.txt`, `leakix.json`, `gitminer/` |
+| 7 | Exposure & Secrets | LeakIX, Gitminer3, Google dorks (Claude + Chrome) | domain, company | `dorks.txt`, `google_dorks.txt`, `leakix.json`, `gitminer/` |
 | 8 | Report | — | all stage outputs | `report_<domain>.html`, `summary.json` |
 
 ---
@@ -305,7 +302,7 @@ Pass `--skip-missing` to suppress the prompt and proceed automatically.
 - **phonebooks.cz.** Works unauthenticated but an API key raises the page limit. Set it under `email.phonebooks.api_key`.
 - **bbot presets.** The default preset runs `subdomain-enum web-basic cloud-enum email-enum`. Adjust via `subdomains.bbot.extra_args` in config.
 - **Gitminer3 token.** GitHub code search needs a personal access token. Set `exposure.gitminer.github_token` or export `GITHUB_TOKEN`; without it, results will be empty.
-- **Google dorking.** Stage 7 drives a real browser via **Playwright** (`pip install playwright && playwright install chromium`) to run **all** Google dorks and catalog the result URLs to `google_dork_urls.txt`. Google rate-limits automated searches, so queries are throttled (`min_delay`/`max_delay`) and CAPTCHA'd queries are flagged for manual follow-up. For long runs, set `headless: false` and/or point `user_data_dir` at a logged-in Chrome profile to reduce blocking.
+- **Google dorking.** Stage 7 drives the `claude` CLI with `--chrome` to run **all** Google dorks (handed to Claude in batches of `batch_size`). Google rate-limits automated searches, so CAPTCHA'd queries are flagged for manual follow-up. Per-batch spend/iterations are bounded via `max_budget_usd` / `max_turns`.
 - **LeakIX.** Queried programmatically via the LeakIX JSON API, which requires authentication. Provide a key via `exposure.leakix.api_key` or the `LEAKIX_API_KEY` environment variable.
 - **IP list (`--ip-list` / `-i`).** Accepts one IP or CIDR per line (inline `#` comments allowed). Each IP is reverse-resolved (PTR) and validated with forward-confirmed reverse DNS (FCrDNS) — a hostname only counts as validated if it forward-resolves back to the same IP. Validated FQDNs are merged into the subdomain pool (source `ptr`) so they flow through DNS validation and crawling. Uses the standard library resolver — no extra tools needed. CIDR expansion is capped by `ip_resolve.max_cidr_hosts`.
 
@@ -331,6 +328,6 @@ AgentE/
 │   └── reporting.py         # Stage 8 — HTML report generator
 └── utils/
     ├── runner.py            # Async subprocess runner + local tool resolution
-    ├── browser_search.py    # Playwright browser-driven Google dorking
+    ├── claude_browser.py    # Claude Code + Chrome bridge (Google dorks)
     └── logger.py            # Colour console + file logging
 ```

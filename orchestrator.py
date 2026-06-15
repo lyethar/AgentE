@@ -67,8 +67,7 @@ TOOL_MANIFEST: list[dict] = [
     {"stage": 5, "bin": "pycroburst",        "hint": "python install_tools.py pycroburst",        "managed": True},
     {"stage": 6, "bin": "linkedin2username", "hint": "python install_tools.py linkedin2username",   "managed": True},
     {"stage": 7, "bin": "gitminer3",        "hint": "python install_tools.py gitminer3",          "managed": True},
-    # Google dorking (stage 7) uses Playwright (a Python package, not a PATH
-    # binary): pip install playwright && playwright install chromium
+    {"stage": 7, "bin": "claude",           "hint": "Claude Code CLI (with --chrome) — used for Google dork lookups; https://claude.com/claude-code"},
 ]
 
 
