@@ -1,8 +1,8 @@
 # AgentE
 
-Agentic reconnaissance workflow that orchestrates subdomain enumeration, DNS validation, JavaScript crawling, asset collection, cloud infrastructure discovery, email intelligence, and external exposure/secret discovery — then consolidates everything into an interactive HTML report.
+Reconnaissance workflow that orchestrates subdomain enumeration, DNS validation, JavaScript crawling, asset collection, cloud infrastructure discovery, email intelligence, and external exposure/secret discovery — then consolidates everything into an interactive HTML report.
 
-![alt text](Gemini_Generated_Image_epemb7epemb7epem.png)
+![alt text](Gemini_Generated_Image_d4iqs8d4iqs8d4iq.png)
 ---
 
 ## Pipeline
