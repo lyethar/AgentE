@@ -1,5 +1,5 @@
 """
-Stage 8 — Interactive HTML Report Generation
+Stage 9 — Interactive HTML Report Generation
 Produces a self-contained single-file HTML report with:
   - Executive summary dashboard
   - Filterable/sortable DataTables for each section
@@ -117,6 +117,12 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
   </div>
   <div class="col-6 col-md-2">
     <div class="stat-card p-3 text-center">
+      <div class="stat-value">{total_js_findings}</div>
+      <div class="stat-label">JS Findings</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="stat-card p-3 text-center">
       <div class="stat-value">{total_cloud}</div>
       <div class="stat-label">Cloud Assets</div>
     </div>
@@ -176,6 +182,7 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-ip">IP &rarr; FQDN</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-ep">Endpoints</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-collected">Collected Assets</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-jsa">JS Analysis</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-cloud">Cloud</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-email">Email Intel</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-exposure">Exposure OSINT</button></li>
@@ -269,6 +276,27 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
     <table id="tblCollected" class="table table-sm w-100">
       <thead><tr><th>Asset (Domain)</th><th>JS</th><th>JSON</th><th>Config</th><th>Total</th></tr></thead>
       <tbody>{rows_collected}</tbody>
+    </table>
+  </div>
+</div>
+
+<!-- JS ANALYSIS -->
+<div class="tab-pane fade" id="tab-jsa">
+  <div class="section-card p-3">
+    <div class="section-title">Client-Side JavaScript Analysis &mdash; semgrep + DOM heuristics</div>
+    <p class="text-muted small">
+      Static analysis of the downloaded JavaScript (Stage 5). semgrep findings:
+      <strong class="text-danger">{jsa_high}</strong> high,
+      <strong class="text-warning">{jsa_medium}</strong> medium,
+      {jsa_total} total &nbsp;|&nbsp; DOM heuristics:
+      <strong>{jsa_sinks}</strong> sinks, <strong>{jsa_postmessage}</strong> postMessage,
+      {jsa_dom} hits. {jsa_semgrep_note}
+      Full detail (per-rule, per-asset, DOM source→sink): {jsa_report_link}
+    </p>
+    <table id="tblJsa" class="table table-sm w-100">
+      <thead><tr><th>Asset</th><th>Findings</th><th>High</th><th>Medium</th>
+                 <th>DOM Hits</th><th>Sinks</th><th>postMessage</th></tr></thead>
+      <tbody>{rows_jsa}</tbody>
     </table>
   </div>
 </div>
@@ -399,7 +427,7 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
 <script>
 $(function() {{
   const dtOpts = {{ pageLength: 25, lengthMenu: [25, 50, 100, 500] }};
-  ['#tblSubs','#tblLive','#tblIp','#tblEp','#tblJs','#tblApi','#tblCollected',
+  ['#tblSubs','#tblLive','#tblIp','#tblEp','#tblJs','#tblApi','#tblCollected','#tblJsa',
    '#tblS3','#tblAzure','#tblGcp','#tblFunc',
    '#tblEmails','#tblUsers','#tblLeakix','#tblGithub','#tblGoogle','#tblSecrets'].forEach(id => {{
     if ($(id).length) $(id).DataTable(dtOpts);
@@ -544,10 +572,12 @@ def generate_report(
     email_data:    dict,
     exposure_data: dict | None = None,
     ip_data:       dict | None = None,
+    jsa_data:      dict | None = None,
 ) -> Path:
-    log.info("=== Stage 8: Generating HTML Report ===")
+    log.info("=== Stage 9: Generating HTML Report ===")
     exposure_data = exposure_data or {}
     ip_data = ip_data or {}
+    jsa_data = jsa_data or {}
 
     # ── Subdomains ──
     subs_by_tool: dict[str, list] = sub_data.get("by_tool", {})
@@ -706,6 +736,27 @@ def generate_report(
         )
     rows_ip = "\n".join(rows_ip_parts)
 
+    # ── JS Analysis (semgrep + DOM) ──
+    jsa_counts = jsa_data.get("counts", {})
+    jsa_by_asset = jsa_data.get("by_asset", {})
+    rows_jsa = "\n".join(
+        f'<tr><td>{_esc(asset)}</td>'
+        f'<td>{a.get("findings", 0)}</td>'
+        f'<td class="{"text-danger" if a.get("high") else ""}">{a.get("high", 0)}</td>'
+        f'<td class="{"text-warning" if a.get("medium") else ""}">{a.get("medium", 0)}</td>'
+        f'<td>{a.get("dom", 0)}</td>'
+        f'<td>{a.get("sinks", 0)}</td><td>{a.get("postmessage", 0)}</td></tr>'
+        for asset, a in sorted(jsa_by_asset.items(),
+                               key=lambda kv: kv[1].get("findings", 0), reverse=True)
+    )
+    jsa_report = jsa_data.get("report_file", "")
+    jsa_report_link = (
+        f'<a href="{_esc(Path(jsa_report).name)}" target="_blank">semgrep_report.html</a>'
+        if jsa_report else "<span class=\"text-muted\">(not generated)</span>"
+    )
+    jsa_semgrep_note = ("" if jsa_data.get("semgrep_available", False)
+                        else "<em>semgrep not installed — DOM heuristics only.</em>")
+
     # ── Charts ──
     all_tool_results = (
         sub_data.get("tool_results", [])
@@ -716,6 +767,7 @@ def generate_report(
         + email_data.get("tool_results", [])
         + exposure_data.get("tool_results", [])
         + ip_data.get("tool_results", [])
+        + jsa_data.get("tool_results", [])
     )
 
     html = _HTML_TEMPLATE.format(
@@ -725,6 +777,16 @@ def generate_report(
         total_live=len(hosts),
         total_endpoints=len(endpoints),
         total_collected=collect_counts.get("downloaded", 0),
+        total_js_findings=jsa_counts.get("findings", 0) + jsa_counts.get("dom", 0),
+        jsa_total=jsa_counts.get("findings", 0),
+        jsa_high=jsa_counts.get("high", 0),
+        jsa_medium=jsa_counts.get("medium", 0),
+        jsa_dom=jsa_counts.get("dom", 0),
+        jsa_sinks=jsa_counts.get("sinks", 0),
+        jsa_postmessage=jsa_counts.get("postmessage", 0),
+        jsa_report_link=jsa_report_link,
+        jsa_semgrep_note=jsa_semgrep_note,
+        rows_jsa=rows_jsa,
         collected_ok=collect_counts.get("downloaded", 0),
         collected_skip=collect_counts.get("skipped", 0),
         collected_fail=collect_counts.get("failed", 0),

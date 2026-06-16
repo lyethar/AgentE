@@ -16,13 +16,15 @@ Target Domain
     ├─ Stage 3 ─ JS & Endpoint Crawl      (gospider · katana)
     │                   │ parallel
     ├─ Stage 4 ─ Asset Collection         (download all JS/JSON/config, organize per asset, Prettier-format JS)
-    │                   │ sequential — consumes Stage 3 crawl output
-    ├─ Stage 5 ─ Cloud Infrastructure     (cloud_enum → pycroburst)  ─┐ parallel
-    ├─ Stage 6 ─ Email Intelligence        (phonebooks.cz · linkedin2username) ─┘
+    │                   │ sequential — consumes Stage 4 collected JS
+    ├─ Stage 5 ─ JS Analysis              (semgrep + DOM source/sink/postMessage heuristics)
+    │                   │ sequential
+    ├─ Stage 6 ─ Cloud Infrastructure     (cloud_enum → pycroburst)  ─┐ parallel
+    ├─ Stage 7 ─ Email Intelligence        (phonebooks.cz · linkedin2username) ─┘
     │
-    ├─ Stage 7 ─ Exposure & Secrets       (LeakIX · Gitminer3 · Google dorks via Claude + Chrome)
+    ├─ Stage 8 ─ Exposure & Secrets       (LeakIX · Gitminer3 · Google dorks via Claude + Chrome)
     │
-    └─ Stage 8 ─ HTML Report
+    └─ Stage 9 ─ HTML Report
 ```
 
 ---
@@ -47,18 +49,21 @@ pip install -r requirements.txt
 | `httpx` | 2 | `go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest` |
 | `gospider` | 3 | `go install github.com/jaeles-project/gospider@latest` |
 | `katana` | 3 | `go install github.com/projectdiscovery/katana/cmd/katana@latest` |
-| `cloud_enum` | 5 | `pip install cloud-enum` |
-| `pycroburst` | 5 | `python install_tools.py pycroburst` ← auto-installer |
-| `linkedin2username` | 6 | `python install_tools.py linkedin2username` ← auto-installer |
-| `gitminer3` | 7 | `python install_tools.py gitminer3` ← auto-installer (needs `GITHUB_TOKEN`) |
-| `claude` | 7 | [Claude Code CLI](https://claude.com/claude-code) with `--chrome` — drives Google dork lookups |
+| `semgrep` | 5 | `pip install semgrep` (optional — DOM heuristics still run without it) |
+| `cloud_enum` | 6 | `pip install cloud-enum` |
+| `pycroburst` | 6 | `python install_tools.py pycroburst` ← auto-installer |
+| `linkedin2username` | 7 | `python install_tools.py linkedin2username` ← auto-installer |
+| `gitminer3` | 8 | `python install_tools.py gitminer3` ← auto-installer (needs `GITHUB_TOKEN`) |
+| `claude` | 8 | [Claude Code CLI](https://claude.com/claude-code) with `--chrome` — drives Google dork lookups |
 | `prettier` | 4 | `npm install -g prettier` (optional — `npx` is used automatically if present) |
 
 Tools that are missing are skipped gracefully at runtime — you only get output for what's installed.
 
 > **Stage 4** (Asset Collection) needs no external binary — it uses the bundled `requests` library to download files. If `prettier` (or `npx`) is available it also pretty-prints the downloaded JavaScript for readable client-side review; if not, that step is skipped.
 >
-> **Stage 7** (Exposure) writes its full dork lists (`dorks.txt`, `google_dorks.txt`) regardless of which tools are present. LeakIX is queried programmatically via its JSON API (key from `exposure.leakix.api_key` or the `LEAKIX_API_KEY` env var); Gitminer3 and Google dorking are skipped if their tools are missing.
+> **Stage 5** (JS Analysis) runs `semgrep` (a broad set of rule packs) over the collected JavaScript and adds regex-based DOM source/sink/postMessage/listener heuristics. The DOM heuristics are pure Python and always run; if `semgrep` isn't installed, that part is skipped. A standalone `semgrep_report.html` is written and a summary is folded into the main report.
+>
+> **Stage 8** (Exposure) writes its full dork lists (`dorks.txt`, `google_dorks.txt`) regardless of which tools are present. LeakIX is queried programmatically via its JSON API (key from `exposure.leakix.api_key` or the `LEAKIX_API_KEY` env var); Gitminer3 and Google dorking are skipped if their tools are missing.
 
 ---
 
@@ -109,7 +114,7 @@ python orchestrator.py -d example.com -c "Acme Corp"
 python orchestrator.py -d example.com --ip-list targets_ips.txt
 
 # Run specific stages only
-#   1=subs 2=validate 3=js 4=collect 5=cloud 6=email 7=exposure 8=report
+#   1=subs 2=validate 3=js 4=collect 5=jsanalysis 6=cloud 7=email 8=exposure 9=report
 python orchestrator.py -d example.com --stages 1,2
 python orchestrator.py -d example.com --stages 3,4,8      # crawl, download JS, report
 python orchestrator.py -d example.com -c "Acme Corp" --stages 7,8   # exposure OSINT + report
@@ -152,14 +157,20 @@ collect:
   prettier:
     enabled: true       # pretty-print downloaded JS (uses npx/global prettier)
 
-# Stage 6 — LinkedIn session cookie + phonebooks.cz API key
+# Stage 5 — client-side JS analysis (semgrep + DOM heuristics)
+js_analysis:
+  enabled: true
+  timeout: 0            # per-directory semgrep timeout (0 = no limit)
+  dom_scan: true        # regex DOM source/sink/postMessage/listener heuristics
+
+# Stage 7 — LinkedIn session cookie + phonebooks.cz API key
 email:
   phonebooks:
     api_key: "YOUR_KEY_HERE"
   linkedin2username:
     cookie: "YOUR_LI_AT_COOKIE"
 
-# Stage 7 — exposure / secret discovery
+# Stage 8 — exposure / secret discovery
 exposure:
   leakix:
     api_key: ""              # leakix.net API key (or set LEAKIX_API_KEY env var)
@@ -209,15 +220,17 @@ output/example.com/20240501_130000/
 │   │   └── config/           # downloaded config-like files
 │   ├── asset_manifest.json   # every download: url, asset, kind, path, status
 │   └── collected_files.txt   # human-readable directory listing
+├── semgrep_report.html       # Stage 5 — standalone JS analysis report (per asset)
+├── semgrep_raw/              # Stage 5 — raw per-directory semgrep JSON
 ├── cloud_enum.txt
 ├── pycroburst.txt
 ├── emails_all.txt
 ├── usernames_all.txt
-├── dorks.txt                 # Stage 7 — Gitminer3 dorks (domain-scoped)
-├── google_dorks.txt          # Stage 7 — Google dork list (domain/company-scoped)
-├── leakix.json               # Stage 7 — raw LeakIX results
-├── google_dork_findings.json # Stage 7 — Google dork findings (Claude + Chrome)
-├── gitminer/                 # Stage 7 — Gitminer3 downloads, CSV + markdown report
+├── dorks.txt                 # Stage 8 — Gitminer3 dorks (domain-scoped)
+├── google_dorks.txt          # Stage 8 — Google dork list (domain/company-scoped)
+├── leakix.json               # Stage 8 — raw LeakIX results
+├── google_dork_findings.json # Stage 8 — Google dork findings (Claude + Chrome)
+├── gitminer/                 # Stage 8 — Gitminer3 downloads, CSV + markdown report
 ├── report_example.com.html   # interactive HTML report
 ├── summary.json              # machine-readable stats
 ├── config_snapshot.yaml      # config used for this run
@@ -240,6 +253,7 @@ The report is a self-contained single HTML file. No server required — open it 
 - **IP → FQDN** — reverse-DNS results per supplied IP with FCrDNS validation status
 - **Endpoints** — all discovered URLs, JS files tab, API paths tab
 - **Collected Assets** — per-asset download counts (JS/JSON/config) with download/skip/fail totals
+- **JS Analysis** — semgrep findings + DOM source/sink/postMessage counts per asset, linking to the full `semgrep_report.html`
 - **Cloud** — S3 buckets, Azure blob storage, GCP, serverless functions
 - **Email Intel** — email addresses with source, LinkedIn usernames
 - **Exposure OSINT** — LeakIX leaks, GitHub secret hits (Gitminer3), and Google dork findings
@@ -257,10 +271,11 @@ All tables have live search, column sort, and pagination.
 | 2 | Validation | dnsgen, puredns, httpx | subdomains | `resolved_subdomains.txt`, `httpx.json`, `live_urls.txt` |
 | 3 | JS & Endpoint Crawl | gospider, katana | live URLs | `endpoints_all.txt` |
 | 4 | Asset Collection | `requests` (built-in), Prettier (optional) | Stage 3 crawl output | `collected/<asset>/{js,json,config}/`, `asset_manifest.json` |
-| 5 | Cloud Infrastructure | cloud_enum, pycroburst | domain keyword | cloud asset lists |
-| 6 | Email Intelligence | phonebooks.cz API, linkedin2username | domain, company | `emails_all.txt`, `usernames_all.txt` |
-| 7 | Exposure & Secrets | LeakIX, Gitminer3, Google dorks (Claude + Chrome) | domain, company | `dorks.txt`, `google_dorks.txt`, `leakix.json`, `gitminer/` |
-| 8 | Report | — | all stage outputs | `report_<domain>.html`, `summary.json` |
+| 5 | JS Analysis | semgrep (optional), DOM heuristics (built-in) | Stage 4 collected JS | `semgrep_report.html`, `semgrep_raw/` |
+| 6 | Cloud Infrastructure | cloud_enum, pycroburst | domain keyword | cloud asset lists |
+| 7 | Email Intelligence | phonebooks.cz API, linkedin2username | domain, company | `emails_all.txt`, `usernames_all.txt` |
+| 8 | Exposure & Secrets | LeakIX, Gitminer3, Google dorks (Claude + Chrome) | domain, company | `dorks.txt`, `google_dorks.txt`, `leakix.json`, `gitminer/` |
+| 9 | Report | — | all stage outputs | `report_<domain>.html`, `summary.json` |
 
 ---
 
@@ -302,7 +317,7 @@ Pass `--skip-missing` to suppress the prompt and proceed automatically.
 - **phonebooks.cz.** Works unauthenticated but an API key raises the page limit. Set it under `email.phonebooks.api_key`.
 - **bbot presets.** The default preset runs `subdomain-enum web-basic cloud-enum email-enum`. Adjust via `subdomains.bbot.extra_args` in config.
 - **Gitminer3 token.** GitHub code search needs a personal access token. Set `exposure.gitminer.github_token` or export `GITHUB_TOKEN`; without it, results will be empty.
-- **Google dorking.** Stage 7 drives the `claude` CLI with `--chrome` to run **all** Google dorks (handed to Claude in batches of `batch_size`). Google rate-limits automated searches, so CAPTCHA'd queries are flagged for manual follow-up. Per-batch spend/iterations are bounded via `max_budget_usd` / `max_turns`.
+- **Google dorking.** Stage 8 drives the `claude` CLI with `--chrome` to run **all** Google dorks (handed to Claude in batches of `batch_size`). Google rate-limits automated searches, so CAPTCHA'd queries are flagged for manual follow-up. Per-batch spend/iterations are bounded via `max_budget_usd` / `max_turns`.
 - **LeakIX.** Queried programmatically via the LeakIX JSON API, which requires authentication. Provide a key via `exposure.leakix.api_key` or the `LEAKIX_API_KEY` environment variable.
 - **IP list (`--ip-list` / `-i`).** Accepts one IP or CIDR per line (inline `#` comments allowed). Each IP is reverse-resolved (PTR) and validated with forward-confirmed reverse DNS (FCrDNS) — a hostname only counts as validated if it forward-resolves back to the same IP. Validated FQDNs are merged into the subdomain pool (source `ptr`) so they flow through DNS validation and crawling. Uses the standard library resolver — no extra tools needed. CIDR expansion is capped by `ip_resolve.max_cidr_hosts`.
 
@@ -322,10 +337,11 @@ AgentE/
 │   ├── validation.py        # Stage 2
 │   ├── js_enum.py           # Stage 3
 │   ├── collector.py         # Stage 4 — asset collection, JS download & Prettier
-│   ├── cloud.py             # Stage 5
-│   ├── email_enum.py        # Stage 6
-│   ├── exposure.py          # Stage 7 — LeakIX, Gitminer3, Google dorks
-│   └── reporting.py         # Stage 8 — HTML report generator
+│   ├── js_analysis.py       # Stage 5 — semgrep + DOM heuristics on collected JS
+│   ├── cloud.py             # Stage 6
+│   ├── email_enum.py        # Stage 7
+│   ├── exposure.py          # Stage 8 — LeakIX, Gitminer3, Google dorks
+│   └── reporting.py         # Stage 9 — HTML report generator
 └── utils/
     ├── runner.py            # Async subprocess runner + local tool resolution
     ├── claude_browser.py    # Claude Code + Chrome bridge (Google dorks)

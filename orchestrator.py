@@ -28,9 +28,10 @@ import yaml
 from modules.cloud      import enumerate_cloud
 from modules.collector  import collect_assets
 from modules.email_enum import enumerate_emails
-from modules.exposure   import enumerate_exposure
-from modules.ip_resolve import resolve_ips
-from modules.js_enum    import enumerate_js
+from modules.exposure    import enumerate_exposure
+from modules.ip_resolve  import resolve_ips
+from modules.js_analysis import analyze_js
+from modules.js_enum     import enumerate_js
 from modules.reporting  import generate_report
 from modules.subdomains import enumerate_subdomains
 from modules.validation import validate_subdomains
@@ -48,7 +49,7 @@ BANNER = r"""
        |___/    github.com/lyethar/AgentE
 """
 
-ALL_STAGES = [1, 2, 3, 4, 5, 6, 7, 8]
+ALL_STAGES = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 # Maps each tool binary to the stage that uses it and an install hint.
 # Stage 4 (asset collection) uses the bundled 'requests' library plus an
@@ -63,11 +64,12 @@ TOOL_MANIFEST: list[dict] = [
     {"stage": 2, "bin": "httpx",            "hint": "go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest"},
     {"stage": 3, "bin": "gospider",         "hint": "go install github.com/jaeles-project/gospider@latest"},
     {"stage": 3, "bin": "katana",           "hint": "go install github.com/projectdiscovery/katana/cmd/katana@latest"},
-    {"stage": 5, "bin": "cloud_enum",       "hint": "pip install cloud-enum  OR  https://github.com/initstring/cloud_enum"},
-    {"stage": 5, "bin": "pycroburst",        "hint": "python install_tools.py pycroburst",        "managed": True},
-    {"stage": 6, "bin": "linkedin2username", "hint": "python install_tools.py linkedin2username",   "managed": True},
-    {"stage": 7, "bin": "gitminer3",        "hint": "python install_tools.py gitminer3",          "managed": True},
-    {"stage": 7, "bin": "claude",           "hint": "Claude Code CLI (with --chrome) — used for Google dork lookups; https://claude.com/claude-code"},
+    {"stage": 5, "bin": "semgrep",          "hint": "pip install semgrep  (DOM heuristics still run without it)"},
+    {"stage": 6, "bin": "cloud_enum",       "hint": "pip install cloud-enum  OR  https://github.com/initstring/cloud_enum"},
+    {"stage": 6, "bin": "pycroburst",        "hint": "python install_tools.py pycroburst",        "managed": True},
+    {"stage": 7, "bin": "linkedin2username", "hint": "python install_tools.py linkedin2username",   "managed": True},
+    {"stage": 8, "bin": "gitminer3",        "hint": "python install_tools.py gitminer3",          "managed": True},
+    {"stage": 8, "bin": "claude",           "hint": "Claude Code CLI (with --chrome) — used for Google dork lookups; https://claude.com/claude-code"},
 ]
 
 
@@ -154,9 +156,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-i", "--ip-list",  default="",
                    help="Optional file of IPs/CIDRs to reverse-resolve and validate (FQDN/FCrDNS)")
     p.add_argument("--config",         default="config.yaml", help="Path to config.yaml")
-    p.add_argument("--stages",         default="1,2,3,4,5,6,7,8",
+    p.add_argument("--stages",         default="1,2,3,4,5,6,7,8,9",
                    help="Comma-separated stages: 1=subs,2=validate,3=js,4=collect,"
-                        "5=cloud,6=email,7=exposure,8=report")
+                        "5=jsanalysis,6=cloud,7=email,8=exposure,9=report")
     p.add_argument("-o", "--output",      default="",  help="Override output directory")
     p.add_argument("-v", "--verbose",     action="store_true")
     p.add_argument("--skip-missing",      action="store_true",
@@ -205,6 +207,11 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
     collect_data = {"root": "", "counts": {"downloaded": 0, "skipped": 0, "failed": 0},
                     "by_asset": {}, "total_urls": 0, "js_count": 0,
                     "manifest": [], "tool_results": []}
+    jsa_data   = {"findings": [], "dom_findings": [], "by_asset": {},
+                  "counts": {"findings": 0, "high": 0, "medium": 0, "low": 0,
+                             "dom": 0, "sinks": 0, "sources": 0,
+                             "postmessage": 0, "listeners": 0},
+                  "assets": 0, "report_file": "", "tool_results": []}
     cloud_data = {"assets": {}, "total": 0, "tool_results": []}
     email_data = {"emails": [], "usernames": [], "tool_results": []}
     ip_data    = {"results": [], "errors": [], "total_ips": 0, "resolved": 0,
@@ -267,24 +274,28 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
     if 4 in stages:
         collect_data = await collect_assets(outdir, cfg, js_data)
 
-    # ── Stage 5 & 6 run in parallel (independent of each other) ──
+    # ── Stage 5: Client-Side JS Analysis — semgrep + DOM (depends on Stage 4) ──
+    if 5 in stages:
+        jsa_data = await analyze_js(outdir, cfg, collect_data)
+
+    # ── Stage 6 & 7 run in parallel (independent of each other) ──
     async def _cloud():
-        return await enumerate_cloud(domain, outdir, cfg) if 5 in stages else cloud_data
+        return await enumerate_cloud(domain, outdir, cfg) if 6 in stages else cloud_data
 
     async def _email():
-        return await enumerate_emails(domain, company, outdir, cfg) if 6 in stages else email_data
+        return await enumerate_emails(domain, company, outdir, cfg) if 7 in stages else email_data
 
     cloud_data, email_data = await asyncio.gather(_cloud(), _email())
 
-    # ── Stage 7: Exposure & Secrets Discovery (LeakIX, Gitminer3, Google dorks) ──
-    if 7 in stages:
+    # ── Stage 8: Exposure & Secrets Discovery (LeakIX, Gitminer3, Google dorks) ──
+    if 8 in stages:
         exposure_data = await enumerate_exposure(domain, company, outdir, cfg)
 
-    # ── Stage 8: Report ──
-    if 8 in stages:
+    # ── Stage 9: Report ──
+    if 9 in stages:
         report_path = generate_report(
             domain, outdir, sub_data, val_data, js_data,
-            collect_data, cloud_data, email_data, exposure_data, ip_data,
+            collect_data, cloud_data, email_data, exposure_data, ip_data, jsa_data,
         )
         log.info("HTML report: file://%s", report_path.resolve())
 
@@ -310,6 +321,9 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
     print(f"  Endpoints   : {len(js_data['endpoints'])}")
     print(f"  JS collected: {collect_data['counts'].get('downloaded', 0)} "
           f"(across {len(collect_data['by_asset'])} assets)")
+    print(f"  JS findings : {jsa_data['counts'].get('findings', 0)} semgrep "
+          f"(high={jsa_data['counts'].get('high', 0)}) + "
+          f"{jsa_data['counts'].get('dom', 0)} DOM hits")
     print(f"  Cloud assets: {cloud_data['total']}")
     print(f"  Emails      : {len(email_data['emails'])}")
     print(f"  Exposures   : {exposure_data.get('total', 0)} "
@@ -336,6 +350,10 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
             "files_collected": collect_data["counts"].get("downloaded", 0),
             "js_formatted":   collect_data.get("prettier", {}).get("formatted", 0),
             "assets":         len(collect_data["by_asset"]),
+            "js_semgrep_findings": jsa_data["counts"].get("findings", 0),
+            "js_semgrep_high":     jsa_data["counts"].get("high", 0),
+            "js_dom_hits":         jsa_data["counts"].get("dom", 0),
+            "js_dom_sinks":        jsa_data["counts"].get("sinks", 0),
             "cloud_assets":   cloud_data["total"],
             "emails":         len(email_data["emails"]),
             "exposures":      exposure_data.get("total", 0),

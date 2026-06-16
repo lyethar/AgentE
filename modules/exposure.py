@@ -1,5 +1,5 @@
 """
-Stage 7 — Exposure & Secrets Discovery (external OSINT)
+Stage 8 — Exposure & Secrets Discovery (external OSINT)
 
 Three independent components, all scoped to the target organization:
 
@@ -732,7 +732,7 @@ async def _run_google_dorks(dorks: list[str], outdir: Path, cfg: dict) -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def enumerate_exposure(domain: str, company: str, outdir: Path, cfg: dict) -> dict:
-    log.info("=== Stage 7: Exposure & Secrets Discovery ===")
+    log.info("=== Stage 8: Exposure & Secrets Discovery ===")
     exp_cfg = cfg.get("exposure", {})
 
     # Always write the dork files so an operator can run them by hand.

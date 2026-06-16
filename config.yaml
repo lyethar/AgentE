@@ -69,7 +69,17 @@ collect:
     enabled: true         # format downloaded JS with Prettier (npx/global prettier)
                           # no time limit — large/minified bundles run to completion
 
-# Stage 5: Cloud Infrastructure
+# Stage 5: Client-Side JavaScript Analysis (semgrep + DOM heuristics)
+js_analysis:
+  enabled: true
+  timeout: 0              # per-directory semgrep timeout (0 = no limit)
+  dom_scan: true          # regex DOM source/sink/postMessage/listener heuristics
+  # configs:              # override the semgrep rule packs (default: a broad set)
+  #   - p/owasp-top-ten
+  #   - p/secrets
+  #   - p/xss
+
+# Stage 6: Cloud Infrastructure
 cloud:
   cloud_enum:
     timeout: 0            # no timeout — cloud_enum brute-forces many providers
@@ -82,7 +92,7 @@ cloud:
     wordlist: ""          # path to custom wordlist
     extra_args: []
 
-# Stage 6: Email & Username Enumeration
+# Stage 7: Email & Username Enumeration
 email:
   phonebooks:
     api_key: ""           # optional - get from phonebook.cz
@@ -94,7 +104,7 @@ email:
     extra_args: []
     # extra_args: ["-s", "50", "-sleep", "2"]
 
-# Stage 7: Exposure & Secrets Discovery (LeakIX, Gitminer3, Google dorks)
+# Stage 8: Exposure & Secrets Discovery (LeakIX, Gitminer3, Google dorks)
 exposure:
   leakix:
     # Queried programmatically via the LeakIX JSON API.

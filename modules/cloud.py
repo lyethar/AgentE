@@ -1,5 +1,5 @@
 """
-Stage 4 — Cloud Infrastructure Enumeration
+Stage 6 — Cloud Infrastructure Enumeration
 Tools: cloud_enum → pyCroBurst
 Discovers cloud storage buckets, blobs, and functions across AWS/Azure/GCP.
 """
@@ -66,7 +66,7 @@ async def run_pycroburst(keyword: str, outdir: Path, cfg: dict) -> ToolResult:
 
 
 async def enumerate_cloud(domain: str, outdir: Path, cfg: dict) -> dict:
-    log.info("=== Stage 4: Cloud Infrastructure Enumeration ===")
+    log.info("=== Stage 6: Cloud Infrastructure Enumeration ===")
     cloud_cfg = cfg.get("cloud", {})
 
     # Derive keyword from domain (strip TLD)
