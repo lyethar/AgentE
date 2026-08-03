@@ -69,7 +69,8 @@ TOOL_MANIFEST: list[dict] = [
     {"stage": 6, "bin": "pycroburst",        "hint": "python install_tools.py pycroburst",        "managed": True},
     {"stage": 7, "bin": "linkedin2username", "hint": "python install_tools.py linkedin2username",   "managed": True},
     {"stage": 8, "bin": "gitminer3",        "hint": "python install_tools.py gitminer3",          "managed": True},
-    {"stage": 8, "bin": "claude",           "hint": "Claude Code CLI (with --chrome) — used for Google dork lookups; https://claude.com/claude-code"},
+    # Google dorking (stage 8) uses the Tavily API (a Python package + the
+    # TAVILY_API_KEY env var), not a PATH binary: pip install tavily-python
 ]
 
 

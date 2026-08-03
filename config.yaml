@@ -123,12 +123,14 @@ exposure:
     timeout: 1200
 
   google_dorks:
-    enabled: true         # requires the `claude` CLI with --chrome
-    batch_size: 5         # dorks per Claude browser task (ALL dorks are always run)
-    permission_mode: acceptEdits
-    max_turns: 30         # bound agent iterations per batch
-    max_budget_usd: 2.0   # bound spend per batch
-    timeout: 600          # per-batch timeout (seconds)
+    # Google dorking via the Tavily search API.
+    # API key is read from the TAVILY_API_KEY environment variable (never hardcoded).
+    enabled: true
+    search_depth: advanced  # Tavily search depth: "basic" or "advanced"
+    max_results: 10         # results returned per dork query
+    download: true          # download the discovered result files
+    workers: 8              # concurrent downloads
+    timeout: 30             # per-download timeout (seconds)
 
 # Optional pre-step: IP -> FQDN resolution (enabled with --ip-list / -i)
 ip_resolve:

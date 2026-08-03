@@ -23,7 +23,7 @@ Target Domain
     ├─ Stage 6 ─ Cloud Infrastructure     (cloud_enum → pycroburst)  ─┐ parallel
     ├─ Stage 7 ─ Email Intelligence        (IntelX/phonebook.cz · linkedin2username) ─┘
     │
-    ├─ Stage 8 ─ Exposure & Secrets       (LeakIX · Gitminer3 · Google dorks via Claude + Chrome)
+    ├─ Stage 8 ─ Exposure & Secrets       (LeakIX · Gitminer3 · Google dorks via Tavily API)
     │
     └─ Stage 9 ─ HTML Report
 ```
@@ -55,7 +55,7 @@ pip install -r requirements.txt
 | `pycroburst` | 6 | `python install_tools.py pycroburst` ← auto-installer |
 | `linkedin2username` | 7 | `python install_tools.py linkedin2username` ← auto-installer |
 | `gitminer3` | 8 | `python install_tools.py gitminer3` ← auto-installer (needs `GITHUB_TOKEN`) |
-| `claude` | 8 | [Claude Code CLI](https://claude.com/claude-code) with `--chrome` — drives Google dork lookups |
+| `tavily-python` | 8 | `pip install tavily-python` — Google dorking via the Tavily API (needs `TAVILY_API_KEY`) |
 | `prettier` | 4 | `npm install -g prettier` (optional — `npx` is used automatically if present) |
 
 Tools that are missing are skipped gracefully at runtime — you only get output for what's installed.
@@ -64,7 +64,7 @@ Tools that are missing are skipped gracefully at runtime — you only get output
 >
 > **Stage 5** (JS Analysis) runs `semgrep` (a broad set of rule packs) over the collected JavaScript and adds regex-based DOM source/sink/postMessage/listener heuristics. The DOM heuristics are pure Python and always run; if `semgrep` isn't installed, that part is skipped. A standalone `semgrep_report.html` is written and a summary is folded into the main report.
 >
-> **Stage 8** (Exposure) writes its full dork lists (`dorks.txt`, `google_dorks.txt`) regardless of which tools are present. LeakIX is queried programmatically via its JSON API (key from `exposure.leakix.api_key` or the `LEAKIX_API_KEY` env var); Gitminer3 and Google dorking are skipped if their tools are missing.
+> **Stage 8** (Exposure) writes its full dork lists (`dorks.txt`, `google_dorks.txt`) regardless of which tools are present. LeakIX is queried programmatically via its JSON API (key from `exposure.leakix.api_key` or the `LEAKIX_API_KEY` env var); Gitminer3 is skipped if missing; Google dorking is skipped unless `tavily-python` is installed and `TAVILY_API_KEY` is set.
 
 ---
 
@@ -109,6 +109,7 @@ Wrappers are written to `tools/bin/` and resolved automatically at runtime — n
 export LEAKIX_API_KEY=".."
 export GITHUB_TOKEN=".."
 export INTELX_KEY=".."
+export TAVILY_API_KEY=".."
 
 # Full run — all 8 stages
 python orchestrator.py -d example.com
@@ -184,9 +185,10 @@ exposure:
   gitminer:
     github_token: ""         # GitHub PAT, or set GITHUB_TOKEN env var
   google_dorks:
-    enabled: true            # needs the `claude` CLI with --chrome (runs ALL dorks)
-    batch_size: 5            # dorks per Claude browser task
-    max_budget_usd: 2.0      # spend cap per Claude browser batch
+    enabled: true            # via the Tavily API (TAVILY_API_KEY env var); runs ALL dorks
+    search_depth: advanced   # "basic" or "advanced"
+    max_results: 10          # results per dork query
+    download: true           # download the discovered result files
 
 # Optional IP -> FQDN resolution (--ip-list / -i)
 ip_resolve:
@@ -236,8 +238,11 @@ output/example.com/20240501_130000/
 ├── linkedin/                 # Stage 7 — linkedin2username per-format output files
 ├── dorks.txt                 # Stage 8 — Gitminer3 dorks (domain-scoped)
 ├── google_dorks.txt          # Stage 8 — Google dork list (domain/company-scoped)
+├── google_dork_catalog.txt   # Stage 8 — result titles + URLs, grouped per query
+├── google_dork_urls.txt      # Stage 8 — deduped result URLs (all dorks)
+├── google_dork_downloads/     # Stage 8 — downloaded result files (+ _manifest.json)
 ├── leakix.json               # Stage 8 — raw LeakIX results
-├── google_dork_findings.json # Stage 8 — Google dork findings (Claude + Chrome)
+├── google_dork_findings.json # Stage 8 — Tavily results + catalog per query
 ├── gitminer/                 # Stage 8 — Gitminer3 downloads, CSV + markdown report
 ├── report_example.com.html   # interactive HTML report
 ├── summary.json              # machine-readable stats
@@ -282,7 +287,7 @@ All tables have live search, column sort, and pagination.
 | 5 | JS Analysis | semgrep (optional), DOM heuristics (built-in) | Stage 4 collected JS | `semgrep_report.html`, `semgrep_raw/` |
 | 6 | Cloud Infrastructure | cloud_enum, pycroburst | domain keyword | cloud asset lists |
 | 7 | Email Intelligence | IntelX/phonebook.cz API, linkedin2username | domain, company | `emails_all.txt`, `usernames_all.txt`, `linkedin/` |
-| 8 | Exposure & Secrets | LeakIX, Gitminer3, Google dorks (Claude + Chrome) | domain, company | `dorks.txt`, `google_dorks.txt`, `leakix.json`, `gitminer/` |
+| 8 | Exposure & Secrets | LeakIX, Gitminer3, Google dorks (Tavily API) | domain, company | `dorks.txt`, `google_dork_catalog.txt`, `google_dork_downloads/`, `leakix.json`, `gitminer/` |
 | 9 | Report | — | all stage outputs | `report_<domain>.html`, `summary.json` |
 
 ---
@@ -325,7 +330,7 @@ Pass `--skip-missing` to suppress the prompt and proceed automatically.
 - **IntelX / phonebook.cz.** Email search uses the IntelX phonebook API at `https://free.intelx.io` (POST `/phonebook/search` → GET `/phonebook/search/result`). The API key is read from the **`INTELX_KEY` environment variable** — it is never stored in `config.yaml`. Without it, the phonebook search is skipped.
 - **bbot presets.** The default preset runs `subdomain-enum web-basic cloud-enum email-enum`. Adjust via `subdomains.bbot.extra_args` in config.
 - **Gitminer3 token.** GitHub code search needs a personal access token. Set `exposure.gitminer.github_token` or export `GITHUB_TOKEN`; without it, results will be empty.
-- **Google dorking.** Stage 8 drives the `claude` CLI with `--chrome` to run **all** Google dorks (handed to Claude in batches of `batch_size`). Google rate-limits automated searches, so CAPTCHA'd queries are flagged for manual follow-up. Per-batch spend/iterations are bounded via `max_budget_usd` / `max_turns`.
+- **Google dorking.** Stage 8 runs **all** Google dorks through the [Tavily search API](https://tavily.com) (`pip install tavily-python`; key from the `TAVILY_API_KEY` env var). For every query it catalogs the result **titles + URLs** (`google_dork_catalog.txt`, `google_dork_findings.json`) and **downloads** the discovered files into `google_dork_downloads/` with a manifest. Tune with `search_depth`, `max_results`, and `download` under `exposure.google_dorks`.
 - **LeakIX.** Queried programmatically via the LeakIX JSON API, which requires authentication. Provide a key via `exposure.leakix.api_key` or the `LEAKIX_API_KEY` environment variable.
 - **IP list (`--ip-list` / `-i`).** Accepts one IP or CIDR per line (inline `#` comments allowed). Each IP is reverse-resolved (PTR) and validated with forward-confirmed reverse DNS (FCrDNS) — a hostname only counts as validated if it forward-resolves back to the same IP. Validated FQDNs are merged into the subdomain pool (source `ptr`) so they flow through DNS validation and crawling. Uses the standard library resolver — no extra tools needed. CIDR expansion is capped by `ip_resolve.max_cidr_hosts`.
 
@@ -352,6 +357,5 @@ AgentE/
 │   └── reporting.py         # Stage 9 — HTML report generator
 └── utils/
     ├── runner.py            # Async subprocess runner + local tool resolution
-    ├── claude_browser.py    # Claude Code + Chrome bridge (Google dorks)
     └── logger.py            # Colour console + file logging
 ```

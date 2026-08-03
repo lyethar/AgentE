@@ -367,7 +367,7 @@ table.dataTable tbody tr:hover {{ background: #131822 !important; }}
     <div class="section-title">Exposure &amp; Secrets Discovery &mdash; External OSINT</div>
     <p class="text-muted small">
       LeakIX leak intelligence, GitHub secret mining (Gitminer3), and Google
-      dorking (Claude&nbsp;+&nbsp;Chrome). Full dork lists are saved to
+      dorking (Tavily API). Full dork lists are saved to
       <code>dorks.txt</code> and <code>google_dorks.txt</code> in the run directory.
     </p>
     <ul class="nav nav-tabs mb-3" id="expTabs">
@@ -709,10 +709,19 @@ def generate_report(
             continue
         hit = ('<span class="text-success">yes</span>'
                if f.get("results_found") else '<span class="text-muted">no</span>')
-        tops = f.get("top_results", []) or []
-        tops_cell = "<br>".join(
-            f'<a href="{_esc(str(u))}" target="_blank">{_esc(str(u)[:90])}</a>' for u in tops[:3]
-        )
+        # Prefer title→URL pairs (Tavily); fall back to bare URL list.
+        results = f.get("results") or []
+        if results:
+            tops_cell = "<br>".join(
+                f'<a href="{_esc(str(r.get("url","")))}" target="_blank">'
+                f'{_esc((r.get("title") or r.get("url","") or "")[:90])}</a>'
+                for r in results[:3] if isinstance(r, dict)
+            )
+        else:
+            tops = f.get("top_results", []) or []
+            tops_cell = "<br>".join(
+                f'<a href="{_esc(str(u))}" target="_blank">{_esc(str(u)[:90])}</a>' for u in tops[:3]
+            )
         rows_google_parts.append(
             f'<tr><td class="small">{_esc(str(f.get("dork","")))}</td>'
             f'<td>{hit}</td><td class="small">{tops_cell}</td>'

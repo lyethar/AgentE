@@ -12,9 +12,10 @@ Three independent components, all scoped to the target organization:
                   generated from a curated credential-leak dork list with the
                   target domain appended to every line so searches stay in scope.
 
-  3. Google     — orchestrates Claude Code + Chrome to run a curated set of
-     Dorks        Google dorks (substituting the target domain/company), records
-                  which return hits, and folds the findings into the HTML report.
+  3. Google     — runs a curated set of Google dorks (substituting the target
+     Dorks        domain/company) through the Tavily search API, catalogs the
+                  result titles + URLs per query, downloads the discovered files,
+                  and folds a summary into the HTML report.
 
 Everything is best-effort: missing tools, a missing `claude` CLI, or a
 rate-limited search degrade to "skipped" rather than failing the pipeline.
@@ -24,14 +25,16 @@ Authorized use only — run against domains you have explicit permission to test
 """
 import asyncio
 import csv
+import hashlib
 import logging
 import os
+import re
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from utils.runner import ToolResult, run_tool
-from utils import claude_browser
 
 log = logging.getLogger("agente.exposure")
 
@@ -645,85 +648,200 @@ async def _run_gitminer(domain: str, outdir: Path, cfg: dict, dorks_file: Path) 
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3. Google dorks via Claude + Chrome
+# 3. Google dorks via the Tavily search API
+#    Each dork is issued as a Tavily query; result titles + URLs are cataloged
+#    per query and the discovered files are downloaded to disk.
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _google_dorks_blocking(dorks: list[str], outdir: Path, cfg: dict) -> dict:
-    if not cfg.get("enabled", True):
-        return {"findings": [], "count": 0, "dorks_run": 0,
-                "skipped": True, "skip_reason": "disabled in config"}
-    if not claude_browser.claude_available():
-        log.warning("Google dorks: claude CLI not found — skipping "
-                    "(full dork list still written to google_dorks.txt)")
-        return {"findings": [], "count": 0, "dorks_run": 0,
-                "skipped": True, "skip_reason": "claude CLI not found"}
+_DL_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
-    # Run through ALL dork queries — no cap. batch_size only controls how many
-    # dorks are handed to Claude per browser task, not how many are run overall.
-    batch_size = max(1, int(cfg.get("batch_size", 5)))
-    subset     = dorks
-    total_batches = (len(subset) + batch_size - 1) // batch_size
-    log.info("Google dorks: running all %d dork(s) in %d batch(es) of %d",
-             len(subset), total_batches, batch_size)
+
+def _tavily_client():
+    """Return (client, error). API key comes from the TAVILY_API_KEY env var."""
+    api_key = os.environ.get("TAVILY_API_KEY", "")
+    if not api_key:
+        return None, "TAVILY_API_KEY environment variable not set"
+    try:
+        from tavily import TavilyClient
+    except ImportError:
+        return None, "tavily-python not installed (pip install tavily-python)"
+    try:
+        return TavilyClient(api_key), ""
+    except Exception as exc:
+        return None, f"TavilyClient init failed: {str(exc)[:160]}"
+
+
+def _dork_download_name(url: str) -> str:
+    """Safe, collision-resistant filename for a downloaded result URL."""
+    parsed = urllib.parse.urlparse(url)
+    base = os.path.basename(parsed.path) or parsed.netloc or "index"
+    base = re.sub(r'[<>:"/\\|?*]', "_", base).strip("._") or "index"
+    digest = hashlib.sha1(url.encode("utf-8", "replace")).hexdigest()[:8]
+    return f"{digest}_{base}"[:180]
+
+
+def _format_catalog(catalog: dict) -> str:
+    """Human-readable catalog: file titles + URLs grouped per query."""
+    lines = ["Google Dork Catalog — file titles & URLs per query", "=" * 60, ""]
+    for dork, results in catalog.items():
+        lines.append(f"[{dork}]  ({len(results)} result(s))")
+        for r in results:
+            lines.append(f"    {r.get('title') or '(no title)'}")
+            lines.append(f"      {r.get('url', '')}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _download_dork_files(catalog: dict, outdir: Path, cfg: dict) -> tuple[list[dict], dict]:
+    """Download every unique result URL into google_dork_downloads/."""
+    counts = {"downloaded": 0, "skipped": 0, "failed": 0}
+    manifest: list[dict] = []
+
+    if not _REQUESTS_AVAILABLE:
+        log.warning("Google dorks: 'requests' not installed — skipping file downloads")
+        return manifest, counts
+
+    # Unique URL -> (first dork it appeared under, title)
+    seen: dict[str, tuple[str, str]] = {}
+    for dork, results in catalog.items():
+        for r in results:
+            url = r.get("url", "")
+            if url and url not in seen:
+                seen[url] = (dork, r.get("title", ""))
+    if not seen:
+        return manifest, counts
+
+    dl_dir = outdir / "google_dork_downloads"
+    dl_dir.mkdir(parents=True, exist_ok=True)
+
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    session = requests.Session()
+    retry = Retry(total=2, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    session.headers.update({"User-Agent": _DL_UA})
+
+    timeout = int(cfg.get("timeout", 30))
+    workers = int(cfg.get("workers", 8))
+
+    def _one(url: str, dork: str, title: str) -> dict:
+        dest = dl_dir / _dork_download_name(url)
+        rel = str(dest.relative_to(outdir))
+        try:
+            if dest.exists() and dest.stat().st_size > 0:
+                return {"url": url, "dork": dork, "title": title, "path": rel, "status": "skipped"}
+            resp = session.get(url, timeout=timeout, stream=True, allow_redirects=True)
+            resp.raise_for_status()
+            with open(dest, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    fh.write(chunk)
+            if dest.stat().st_size == 0:
+                dest.unlink(missing_ok=True)
+                return {"url": url, "dork": dork, "title": title, "path": rel, "status": "failed"}
+            return {"url": url, "dork": dork, "title": title, "path": rel, "status": "downloaded"}
+        except Exception:
+            try:
+                if dest.exists() and dest.stat().st_size == 0:
+                    dest.unlink()
+            except OSError:
+                pass
+            return {"url": url, "dork": dork, "title": title, "path": rel, "status": "failed"}
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_one, u, d, t) for u, (d, t) in seen.items()]
+        for fut in as_completed(futures):
+            m = fut.result()
+            manifest.append(m)
+            counts[m["status"]] = counts.get(m["status"], 0) + 1
+
+    return manifest, counts
+
+
+def _google_dorks_blocking(dorks: list[str], outdir: Path, cfg: dict) -> dict:
+    import json as _json
+
+    empty = {"findings": [], "count": 0, "dorks_run": 0, "url_count": 0,
+             "urls": [], "downloaded": 0}
+    if not cfg.get("enabled", True):
+        return {**empty, "skipped": True, "skip_reason": "disabled in config"}
+
+    client, err = _tavily_client()
+    if client is None:
+        log.warning("Google dorks: %s — skipping (full dork list still written "
+                    "to google_dorks.txt)", err)
+        return {**empty, "skipped": True, "skip_reason": err}
+
+    search_depth = cfg.get("search_depth", "advanced")
+    max_results = int(cfg.get("max_results", 10))
+    log.info("Google dorks: running all %d dork(s) via Tavily (search_depth=%s)",
+             len(dorks), search_depth)
 
     findings: list[dict] = []
+    catalog: dict[str, list[dict]] = {}
     run_count = 0
-    for start in range(0, len(subset), batch_size):
-        batch = subset[start:start + batch_size]
-        numbered = "\n".join(f"{i+1}. {d}" for i, d in enumerate(batch))
-        prompt = (
-            "You are assisting an AUTHORIZED security assessment. For each Google "
-            "search query below, open "
-            "https://www.google.com/search?q=<URL-encoded query> in Chrome, let "
-            "the page load, and record: whether any results were returned, the top "
-            "up-to-3 result URLs, and a one-line note on anything sensitive "
-            "(exposed files, admin panels, secrets, error leaks, etc.). If Google "
-            "presents a CAPTCHA or blocks the search, set note to 'captcha' for "
-            "that query and continue to the next. Return ONLY a JSON array, one "
-            "object per query, with keys: dork (string), results_found (boolean), "
-            "top_results (array of strings), note (string).\n\nQueries:\n"
-            + numbered
-        )
+
+    for i, dork in enumerate(dorks, 1):
         try:
-            envelope = claude_browser.run_claude_browser_task(
-                prompt,
-                cwd=str(outdir),
-                permission_mode=cfg.get("permission_mode", "acceptEdits"),
-                timeout=int(cfg.get("timeout", 600)),
-                max_turns=cfg.get("max_turns"),
-                max_budget_usd=cfg.get("max_budget_usd"),
-            )
+            resp = client.search(query=dork, search_depth=search_depth,
+                                 max_results=max_results)
         except Exception as exc:
-            log.warning("Google dorks: batch %d failed: %s", start // batch_size + 1, exc)
+            log.warning("Google dorks: query %d/%d failed: %s", i, len(dorks), exc)
+            findings.append({"dork": dork, "results_found": False, "top_results": [],
+                             "results": [], "note": f"error: {str(exc)[:100]}"})
             continue
 
-        run_count += len(batch)
-        parsed = claude_browser.extract_json(claude_browser.result_text(envelope))
-        if isinstance(parsed, list):
-            for entry in parsed:
-                if isinstance(entry, dict):
-                    findings.append({
-                        "dork": str(entry.get("dork", "")),
-                        "results_found": bool(entry.get("results_found", False)),
-                        "top_results": entry.get("top_results", []) or [],
-                        "note": str(entry.get("note", "")),
-                    })
-        log.info("Google dorks: batch %d/%d processed",
-                 start // batch_size + 1, (len(subset) + batch_size - 1) // batch_size)
+        run_count += 1
+        raw = resp.get("results", []) if isinstance(resp, dict) else []
+        norm = [{
+            "title": (r.get("title") or "").strip(),
+            "url": r.get("url", ""),
+            "score": r.get("score"),
+            "content": (r.get("content") or "")[:500],
+        } for r in raw if isinstance(r, dict) and r.get("url")]
 
-    import json as _json
+        catalog[dork] = norm
+        findings.append({
+            "dork": dork,
+            "results_found": bool(norm),
+            "top_results": [n["url"] for n in norm[:5]],
+            "results": [{"title": n["title"], "url": n["url"]} for n in norm[:5]],
+            "note": f"{len(norm)} result(s)",
+        })
+        if i % 10 == 0 or i == len(dorks):
+            log.info("Google dorks: %d/%d queried", i, len(dorks))
+
+    all_urls = sorted({n["url"] for rs in catalog.values() for n in rs if n["url"]})
+
+    # Catalog outputs: titles + URLs per query
     (outdir / "google_dork_findings.json").write_text(
-        _json.dumps(findings, indent=2), encoding="utf-8"
-    )
+        _json.dumps({"catalog": catalog, "findings": findings}, indent=2), encoding="utf-8")
+    (outdir / "google_dork_catalog.txt").write_text(_format_catalog(catalog), encoding="utf-8")
+    (outdir / "google_dork_urls.txt").write_text("\n".join(all_urls), encoding="utf-8")
+
+    # Download the discovered files
+    downloaded = 0
+    if cfg.get("download", True):
+        manifest, dcounts = _download_dork_files(catalog, outdir, cfg)
+        downloaded = dcounts.get("downloaded", 0)
+        (outdir / "google_dork_downloads_manifest.json").write_text(
+            _json.dumps(manifest, indent=2), encoding="utf-8")
+        log.info("Google dorks: downloaded %d file(s) (skip=%d fail=%d)",
+                 downloaded, dcounts.get("skipped", 0), dcounts.get("failed", 0))
+
     hits = sum(1 for f in findings if f.get("results_found"))
-    log.info("Google dorks: %d/%d queries run, %d returned results",
-             run_count, len(subset), hits)
+    log.info("Google dorks: %d/%d queries returned results, %d URLs cataloged, %d downloaded",
+             hits, run_count, len(all_urls), downloaded)
     return {"findings": findings, "count": hits, "dorks_run": run_count,
+            "url_count": len(all_urls), "urls": all_urls, "downloaded": downloaded,
             "skipped": False, "skip_reason": ""}
 
 
 async def _run_google_dorks(dorks: list[str], outdir: Path, cfg: dict) -> dict:
-    log.info("Google dorks: orchestrating Claude + Chrome over %d dork(s)", len(dorks))
+    # Tavily client + downloads are blocking → run in a worker thread.
+    log.info("Google dorks: querying Tavily over %d dork(s)", len(dorks))
     return await asyncio.to_thread(_google_dorks_blocking, dorks, outdir, cfg)
 
 
@@ -762,7 +880,7 @@ async def enumerate_exposure(domain: str, company: str, outdir: Path, cfg: dict)
         _gitminer_branch(),
     )
 
-    # Google dorking (Claude+Chrome) runs after — it is browser-bound and slow.
+    # Google dorking (Tavily API) runs after — it queries + downloads files.
     google = await _run_google_dorks(gd_dorks, outdir, gd_cfg)
 
     tool_results = [
