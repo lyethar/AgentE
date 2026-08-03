@@ -101,11 +101,12 @@ email:
     timeout: 20          # server-side search timeout (seconds)
 
   linkedin2username:
-    timeout: 300
+    # Runs interactively (its output is visible and it prompts for a browser
+    # login) and NEVER times out — it is only stopped once it completes.
+    # -c (company) and -n (domain) are supplied automatically from the CLI.
     sleep: 30            # -s: seconds to sleep between LinkedIn page requests
-    # Requires an interactive browser login (opens LinkedIn, prompts to press Enter).
     extra_args: []
-    # extra_args: ["-n", "example.com", "-d", "2"]   # append domain / crawl depth
+    # extra_args: ["-d", "2"]   # e.g. crawl depth
 
 # Stage 8: Exposure & Secrets Discovery (LeakIX, Gitminer3, Google dorks)
 exposure:

@@ -105,6 +105,7 @@ async def run_tool(
     env: dict | None = None,
     timeout: int | None = None,
     stdin_data: str | None = None,
+    interactive: bool = False,
 ) -> ToolResult:
     """
     Run an external tool to completion.
@@ -113,6 +114,11 @@ async def run_tool(
     or any non-positive value means *no timeout* — the tool runs until it exits
     on its own. This is what lets long-running tools (bbot, cloud_enum, …) finish
     before the next stage starts; the progress_monitor keeps them observable.
+
+    interactive: when True, the child inherits the terminal's stdin/stdout/stderr
+    instead of piped output. Use this for tools that prompt for user input or
+    whose live output must be visible (e.g. linkedin2username's browser-login
+    flow). Output is not captured, so ToolResult.stdout/stderr stay empty.
     """
     resolved = resolve_tool(cmd[0])
     if resolved is None:
@@ -130,34 +136,54 @@ async def run_tool(
     resolved_cmd = [resolved, *cmd[1:]]
     start = time.monotonic()
     token = _register_tool(tool_name)
-    log.info("[%s] Started (%s)", tool_name,
-             f"timeout {timeout}s" if use_timeout else "no timeout")
+    mode = ("interactive, no timeout" if interactive and not use_timeout
+            else "interactive" if interactive
+            else f"timeout {timeout}s" if use_timeout else "no timeout")
+    log.info("[%s] Started (%s)", tool_name, mode)
     proc = None
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *[str(c) for c in resolved_cmd],
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.PIPE if stdin_data else None,
-            cwd=str(cwd) if cwd else None,
-            env=env,
-        )
-        stdin_bytes = stdin_data.encode() if stdin_data else None
-        if use_timeout:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(input=stdin_bytes), timeout=timeout
+        if interactive:
+            # Inherit the terminal (no PIPE) so prompts and live output are
+            # visible to the user and stdin can be answered. Output isn't captured.
+            proc = await asyncio.create_subprocess_exec(
+                *[str(c) for c in resolved_cmd],
+                cwd=str(cwd) if cwd else None,
+                env=env,
+            )
+            if use_timeout:
+                await asyncio.wait_for(proc.wait(), timeout=timeout)
+            else:
+                await proc.wait()
+            duration = time.monotonic() - start
+            result = ToolResult(
+                tool=tool_name, cmd=cmd, returncode=proc.returncode,
+                stdout="", stderr="", duration=duration,
             )
         else:
-            # No timeout — wait for the process to finish on its own.
-            stdout_b, stderr_b = await proc.communicate(input=stdin_bytes)
-        duration = time.monotonic() - start
-        result = ToolResult(
-            tool=tool_name, cmd=cmd,
-            returncode=proc.returncode,
-            stdout=stdout_b.decode("utf-8", errors="replace"),
-            stderr=stderr_b.decode("utf-8", errors="replace"),
-            duration=duration,
-        )
+            proc = await asyncio.create_subprocess_exec(
+                *[str(c) for c in resolved_cmd],
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.PIPE if stdin_data else None,
+                cwd=str(cwd) if cwd else None,
+                env=env,
+            )
+            stdin_bytes = stdin_data.encode() if stdin_data else None
+            if use_timeout:
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    proc.communicate(input=stdin_bytes), timeout=timeout
+                )
+            else:
+                # No timeout — wait for the process to finish on its own.
+                stdout_b, stderr_b = await proc.communicate(input=stdin_bytes)
+            duration = time.monotonic() - start
+            result = ToolResult(
+                tool=tool_name, cmd=cmd,
+                returncode=proc.returncode,
+                stdout=stdout_b.decode("utf-8", errors="replace"),
+                stderr=stderr_b.decode("utf-8", errors="replace"),
+                duration=duration,
+            )
         if result.success:
             log.info("[%s] Finished in %.1fs", tool_name, duration)
         else:

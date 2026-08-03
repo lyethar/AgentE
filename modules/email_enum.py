@@ -160,23 +160,32 @@ async def run_linkedin2username(company: str, domain: str, outdir: Path, cfg: di
     linkedin2username: scrapes LinkedIn employees for a company and writes
     username-format files. Invocation mirrors:
 
-        python3 linkedin2username.py -s 30 -c "<company>" -o linkedin
+        python3 linkedin2username.py -s 30 -c "<company>" -n "<domain>" -o linkedin
 
       -c  company slug (matches the orchestrator's -c/--company)
+      -n  domain to append to usernames (the orchestrator's -d/--domain)
       -s  seconds to sleep between page requests
       -o  output directory (created under the run directory)
 
     Output files land in ``<run>/linkedin/<company>-<format>.txt``.
+
+    The tool requires an interactive browser login (it opens LinkedIn and waits
+    for the user to press Enter), so it is run in *interactive* mode — its output
+    is shown live and it can read stdin — and with *no timeout*, so it is never
+    killed before it finishes.
     """
     cmd = [
         "linkedin2username",
         "-s", str(cfg.get("sleep", 30)),
         "-c", company,
+        "-n", domain,
         "-o", "linkedin",
         *cfg.get("extra_args", []),
     ]
     # Run inside the run directory so `-o linkedin` writes to <run>/linkedin/.
-    return await run_tool(cmd, "linkedin2username", cwd=outdir, timeout=cfg.get("timeout"))
+    # timeout=None → never times out; interactive=True → visible/answerable.
+    return await run_tool(cmd, "linkedin2username", cwd=outdir,
+                          timeout=None, interactive=True)
 
 
 def _parse_linkedin_output(outdir: Path) -> list[str]:
