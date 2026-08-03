@@ -21,7 +21,7 @@ Target Domain
     ├─ Stage 5 ─ JS Analysis              (semgrep + DOM source/sink/postMessage heuristics)
     │                   │ sequential
     ├─ Stage 6 ─ Cloud Infrastructure     (cloud_enum → pycroburst)  ─┐ parallel
-    ├─ Stage 7 ─ Email Intelligence        (phonebooks.cz · linkedin2username) ─┘
+    ├─ Stage 7 ─ Email Intelligence        (IntelX/phonebook.cz · linkedin2username) ─┘
     │
     ├─ Stage 8 ─ Exposure & Secrets       (LeakIX · Gitminer3 · Google dorks via Claude + Chrome)
     │
@@ -169,12 +169,13 @@ js_analysis:
   timeout: 0            # per-directory semgrep timeout (0 = no limit)
   dom_scan: true        # regex DOM source/sink/postMessage/listener heuristics
 
-# Stage 7 — LinkedIn session cookie + phonebooks.cz API key
+# Stage 7 — IntelX phonebook search + LinkedIn username scraping
+#   IntelX API key comes from the INTELX_KEY environment variable (not config)
 email:
-  phonebooks:
-    api_key: "YOUR_KEY_HERE"
+  intelx:
+    maxresults: 10000
   linkedin2username:
-    cookie: "YOUR_LI_AT_COOKIE"
+    sleep: 30            # -s: seconds between LinkedIn page requests
 
 # Stage 8 — exposure / secret discovery
 exposure:
@@ -230,8 +231,9 @@ output/example.com/20240501_130000/
 ├── semgrep_raw/              # Stage 5 — raw per-directory semgrep JSON
 ├── cloud_enum.txt
 ├── pycroburst.txt
-├── emails_all.txt
-├── usernames_all.txt
+├── emails_all.txt            # Stage 7 — IntelX emails + LinkedIn-derived emails
+├── usernames_all.txt         # Stage 7 — LinkedIn username candidates
+├── linkedin/                 # Stage 7 — linkedin2username per-format output files
 ├── dorks.txt                 # Stage 8 — Gitminer3 dorks (domain-scoped)
 ├── google_dorks.txt          # Stage 8 — Google dork list (domain/company-scoped)
 ├── leakix.json               # Stage 8 — raw LeakIX results
@@ -279,7 +281,7 @@ All tables have live search, column sort, and pagination.
 | 4 | Asset Collection | `requests` (built-in), Prettier (optional) | Stage 3 crawl output | `collected/<asset>/{js,json,config}/`, `asset_manifest.json` |
 | 5 | JS Analysis | semgrep (optional), DOM heuristics (built-in) | Stage 4 collected JS | `semgrep_report.html`, `semgrep_raw/` |
 | 6 | Cloud Infrastructure | cloud_enum, pycroburst | domain keyword | cloud asset lists |
-| 7 | Email Intelligence | phonebooks.cz API, linkedin2username | domain, company | `emails_all.txt`, `usernames_all.txt` |
+| 7 | Email Intelligence | IntelX/phonebook.cz API, linkedin2username | domain, company | `emails_all.txt`, `usernames_all.txt`, `linkedin/` |
 | 8 | Exposure & Secrets | LeakIX, Gitminer3, Google dorks (Claude + Chrome) | domain, company | `dorks.txt`, `google_dorks.txt`, `leakix.json`, `gitminer/` |
 | 9 | Report | — | all stage outputs | `report_<domain>.html`, `summary.json` |
 
@@ -319,8 +321,8 @@ Pass `--skip-missing` to suppress the prompt and proceed automatically.
 - **Tool timeouts.** Each tool's `timeout` in `config.yaml` is in seconds; set it to `0` (or remove it) for **no timeout**, so the tool runs to completion before the next stage starts. Long-running tools (`bbot`, `cloud_enum`, `pycroburst`) ship with `timeout: 0` for this reason — they are never killed mid-scan.
 - **Progress tracking.** While stages run, AgentE logs a heartbeat of which tools are still executing and for how long (e.g. `[progress] 2 tool(s) running: bbot (412s), cloud_enum (380s)`). Tune the cadence with `global.progress_interval` (seconds; `0` disables it).
 - **Rate limits.** Default puredns rate is 3000 req/s. Lower it on slow networks or shared resolvers.
-- **LinkedIn cookie.** `linkedin2username` requires a valid `li_at` session cookie. Set it in `config.yaml` under `email.linkedin2username.cookie`.
-- **phonebooks.cz.** Works unauthenticated but an API key raises the page limit. Set it under `email.phonebooks.api_key`.
+- **linkedin2username.** Invoked as `linkedin2username -s <sleep> -c "<company>" -o linkedin`, where `-c` is the orchestrator's `-c/--company`. It authenticates through an **interactive browser login** (opens LinkedIn and waits for you to press Enter), so run it interactively; output lands in `<run>/linkedin/`. Tune the sleep with `email.linkedin2username.sleep`.
+- **IntelX / phonebook.cz.** Email search uses the IntelX phonebook API at `https://free.intelx.io` (POST `/phonebook/search` → GET `/phonebook/search/result`). The API key is read from the **`INTELX_KEY` environment variable** — it is never stored in `config.yaml`. Without it, the phonebook search is skipped.
 - **bbot presets.** The default preset runs `subdomain-enum web-basic cloud-enum email-enum`. Adjust via `subdomains.bbot.extra_args` in config.
 - **Gitminer3 token.** GitHub code search needs a personal access token. Set `exposure.gitminer.github_token` or export `GITHUB_TOKEN`; without it, results will be empty.
 - **Google dorking.** Stage 8 drives the `claude` CLI with `--chrome` to run **all** Google dorks (handed to Claude in batches of `batch_size`). Google rate-limits automated searches, so CAPTCHA'd queries are flagged for manual follow-up. Per-batch spend/iterations are bounded via `max_budget_usd` / `max_turns`.

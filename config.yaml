@@ -94,15 +94,18 @@ cloud:
 
 # Stage 7: Email & Username Enumeration
 email:
-  phonebooks:
-    api_key: ""           # optional - get from phonebook.cz
-    max_pages: 5
+  intelx:
+    # IntelX / phonebook.cz phonebook API (https://free.intelx.io).
+    # The API key is read from the INTELX_KEY environment variable — never hardcode it here.
+    maxresults: 10000
+    timeout: 20          # server-side search timeout (seconds)
 
   linkedin2username:
     timeout: 300
-    cookie: ""            # LinkedIn li_at session cookie (required)
+    sleep: 30            # -s: seconds to sleep between LinkedIn page requests
+    # Requires an interactive browser login (opens LinkedIn, prompts to press Enter).
     extra_args: []
-    # extra_args: ["-s", "50", "-sleep", "2"]
+    # extra_args: ["-n", "example.com", "-d", "2"]   # append domain / crawl depth
 
 # Stage 8: Exposure & Secrets Discovery (LeakIX, Gitminer3, Google dorks)
 exposure:
