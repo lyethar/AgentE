@@ -105,6 +105,11 @@ Wrappers are written to `tools/bin/` and resolved automatically at runtime — n
 ## Usage
 
 ```bash
+# Export environment variables
+export LEAKIX_API_KEY=".."
+export GITHUB_TOKEN=".."
+export =".."
+
 # Full run — all 8 stages
 python orchestrator.py -d example.com
 
