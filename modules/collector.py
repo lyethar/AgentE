@@ -1,10 +1,11 @@
 """
-Stage 4 — Asset Collection & JavaScript Download
-Runs after GoSpider/Katana (Stage 3). Parses their crawl output, organizes
-discovered files into per-asset directories, and downloads every JavaScript
-(plus JSON / config) file for later client-side inspection with other tools.
+Stage 5 — Asset Collection & JavaScript Download
+Runs after the crawl (GoSpider / Katana / waymore, Stage 4). Parses their crawl
+output, organizes discovered files into per-asset directories, and downloads
+every JavaScript (plus JSON / config) file — including JS flagged by waymore —
+for later client-side inspection with other tools.
 
-Output layout (under <run>/collected/):
+Output layout (under <run>/05-assets/collected/):
     collected/
       <asset-domain>/
         js/        downloaded *.js
@@ -140,14 +141,18 @@ def _parse_url_list(path: Path) -> set[str]:
     return urls
 
 
-def _gather_download_urls(outdir: Path, js_data: dict) -> set[str]:
-    """Union of every downloadable URL from all Stage-3 sources."""
+def _gather_download_urls(crawl_dir: Path, js_data: dict) -> set[str]:
+    """Union of every downloadable URL from all Stage-4 crawl sources."""
     urls: set[str] = set()
-    urls |= _parse_gospider_dir(outdir)
-    urls |= _parse_url_list(outdir / "katana.txt")
-    urls |= _parse_url_list(outdir / "endpoints_all.txt")
-    # Also fold in the js_files list Stage 3 already classified
+    urls |= _parse_gospider_dir(crawl_dir)
+    urls |= _parse_url_list(crawl_dir / "katana.txt")
+    urls |= _parse_url_list(crawl_dir / "waymore-urs.txt")
+    urls |= _parse_url_list(crawl_dir / "endpoints_all.txt")
+    # Also fold in the js_files list (incl. waymore JS) Stage 4 already classified
     for u in js_data.get("js_files", []):
+        if _is_downloadable_url(u):
+            urls.add(u)
+    for u in js_data.get("waymore_js", []):
         if _is_downloadable_url(u):
             urls.add(u)
     for u in js_data.get("endpoints", []):
@@ -272,12 +277,14 @@ def _run_prettier(collected_root: Path, cfg: dict) -> dict:
     return info
 
 
-def _collect_blocking(outdir: Path, js_data: dict, cfg: dict) -> dict:
+def _collect_blocking(crawl_dir: Path, assets_dir: Path, js_data: dict, cfg: dict) -> dict:
     """Synchronous collection routine (run in a thread from the async stage)."""
-    collected_root = outdir / "collected"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    collected_root = assets_dir / "collected"
     collected_root.mkdir(exist_ok=True)
+    outdir = assets_dir  # manifest paths are relative to the assets stage dir
 
-    urls = _gather_download_urls(outdir, js_data)
+    urls = _gather_download_urls(crawl_dir, js_data)
     log.info("Collector: %d downloadable URLs (js/json/config) discovered", len(urls))
 
     # Plan downloads: per-asset, per-kind directory layout
@@ -399,8 +406,8 @@ def _write_listing(root: Path, by_asset: dict, counts: dict) -> None:
 # Async entry point
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def collect_assets(outdir: Path, cfg: dict, js_data: dict) -> dict:
-    log.info("=== Stage 4: Asset Collection & JavaScript Download ===")
+async def collect_assets(crawl_dir: Path, assets_dir: Path, cfg: dict, js_data: dict) -> dict:
+    log.info("=== Stage 5: Asset Collection & JavaScript Download ===")
     collect_cfg = cfg.get("collect", {})
     # Heavy I/O runs in a worker thread so the event loop stays responsive
-    return await asyncio.to_thread(_collect_blocking, outdir, js_data, collect_cfg)
+    return await asyncio.to_thread(_collect_blocking, crawl_dir, assets_dir, js_data, collect_cfg)

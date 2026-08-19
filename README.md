@@ -1,6 +1,6 @@
 # AgentE
 
-Reconnaissance workflow that orchestrates subdomain enumeration, DNS validation, JavaScript crawling, asset collection, cloud infrastructure discovery, email intelligence, and external exposure/secret discovery — then consolidates everything into an interactive HTML report.
+Reconnaissance workflow that orchestrates subdomain enumeration, DNS validation, screenshotting & vulnerability scanning, JavaScript crawling, asset collection, cloud infrastructure discovery, email intelligence, and external exposure/secret discovery — then consolidates everything into a set of interactive HTML reports (one per stage).
 
 ![alt text](Gemini_Generated_Image_d4iqs8d4iqs8d4iq.png)
 ---
@@ -12,20 +12,22 @@ Target Domain
     │
     ├─ Stage 1 ─ Subdomain Enumeration    (subfinder · subscraper · bbot)
     │                   │ parallel
-    ├─ Stage 2 ─ Validation               (dnsgen → puredns → httpx)
+    ├─ Stage 2 ─ Validation               (dnsgen → puredns → httpx)   → live-urls.txt
     │                   │ sequential — each tool feeds the next
-    ├─ Stage 3 ─ JS & Endpoint Crawl      (gospider · katana)
-    │                   │ parallel
-    ├─ Stage 4 ─ Asset Collection         (download all JS/JSON/config, organize per asset, Prettier-format JS)
-    │                   │ sequential — consumes Stage 4 collected JS
-    ├─ Stage 5 ─ JS Analysis              (semgrep + DOM source/sink/postMessage heuristics)
+    ├─ Stage 3 ─ Screenshots & Vuln Scan  (gowitness screenshots + report server · nuclei) 
+    │                   │ scans live URLs; never killed early
+    ├─ Stage 4 ─ JS & Endpoint Crawl      (gospider · katana · waymore)
+    │                   │ parallel — JS files flagged for download
+    ├─ Stage 5 ─ Asset Collection         (download all JS/JSON/config incl. waymore JS, organize per asset, Prettier-format)
+    │                   │ sequential — consumes Stage 5 collected JS
+    ├─ Stage 6 ─ JS Analysis              (semgrep + DOM source/sink/postMessage heuristics)
     │                   │ sequential
-    ├─ Stage 6 ─ Cloud Infrastructure     (cloud_enum → pycroburst)  ─┐ parallel
-    ├─ Stage 7 ─ Email Intelligence        (IntelX/phonebook.cz · linkedin2username) ─┘
+    ├─ Stage 7 ─ Cloud Infrastructure     (cloud_enum → pycroburst)  ─┐ parallel
+    ├─ Stage 8 ─ Email Intelligence        (IntelX/phonebook.cz · linkedin2username) ─┘
     │
-    ├─ Stage 8 ─ Exposure & Secrets       (LeakIX · Gitminer3 · Google dorks via Tavily API)
+    ├─ Stage 9 ─ Exposure & Secrets       (LeakIX · Gitminer3 · Google dorks via Tavily API)
     │
-    └─ Stage 9 ─ HTML Report
+    └─ Stage 10 ─ HTML Reports (split — one file per stage under reports/)
 ```
 
 ---
@@ -48,23 +50,30 @@ pip install -r requirements.txt
 | `dnsgen` | 2 | `pip install dnsgen` |
 | `puredns` | 2 | `go install github.com/d3mondev/puredns/v2@latest` |
 | `httpx` | 2 | `go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest` |
-| `gospider` | 3 | `go install github.com/jaeles-project/gospider@latest` |
-| `katana` | 3 | `go install github.com/projectdiscovery/katana/cmd/katana@latest` |
-| `semgrep` | 5 | `pip install semgrep` (optional — DOM heuristics still run without it) |
-| `cloud_enum` | 6 | `pip install cloud-enum` |
-| `pycroburst` | 6 | `python install_tools.py pycroburst` ← auto-installer |
-| `linkedin2username` | 7 | `python install_tools.py linkedin2username` ← auto-installer |
-| `gitminer3` | 8 | `python install_tools.py gitminer3` ← auto-installer (needs `GITHUB_TOKEN`) |
-| `tavily-python` | 8 | `pip install tavily-python` — Google dorking via the Tavily API (needs `TAVILY_API_KEY`) |
-| `prettier` | 4 | `npm install -g prettier` (optional — `npx` is used automatically if present) |
+| `gowitness` | 3 | Download a release binary from https://github.com/sensepost/gowitness/releases (place it in your `PATH`) |
+| `nuclei` | 3 | `sudo apt install nuclei`  *or*  `go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest` |
+| `gospider` | 4 | `go install github.com/jaeles-project/gospider@latest` |
+| `katana` | 4 | `go install github.com/projectdiscovery/katana/cmd/katana@latest` |
+| `waymore` | 4 | `pip install waymore` — historical/archived URL discovery |
+| `semgrep` | 6 | `pip install semgrep` (optional — DOM heuristics still run without it) |
+| `cloud_enum` | 7 | `pip install cloud-enum` |
+| `pycroburst` | 7 | `python install_tools.py pycroburst` ← auto-installer |
+| `linkedin2username` | 8 | `python install_tools.py linkedin2username` ← auto-installer |
+| `gitminer3` | 9 | `python install_tools.py gitminer3` ← auto-installer (needs `GITHUB_TOKEN`) |
+| `tavily-python` | 9 | `pip install tavily-python` — Google dorking via the Tavily API (needs `TAVILY_API_KEY`) |
+| `prettier` | 5 | `npm install -g prettier` (optional — `npx` is used automatically if present) |
 
 Tools that are missing are skipped gracefully at runtime — you only get output for what's installed.
 
-> **Stage 4** (Asset Collection) needs no external binary — it uses the bundled `requests` library to download files. If `prettier` (or `npx`) is available it also pretty-prints the downloaded JavaScript for readable client-side review; if not, that step is skipped.
+> **Stage 3** (Screenshots & Vuln Scan) screenshots every live URL with `gowitness scan file -f live-urls.txt --write-db`, then launches `gowitness report server --host 0.0.0.0` as a **detached** background service (never killed — it keeps serving the screenshot gallery, default `http://0.0.0.0:7171`). In parallel it runs `nuclei -l live-urls.txt -o nuclei-results.out`; findings are parsed by host into `reports/03-nuclei.html`. Both scans run with **no timeout** so they are never killed before completing.
 >
-> **Stage 5** (JS Analysis) runs `semgrep` (a broad set of rule packs) over the collected JavaScript and adds regex-based DOM source/sink/postMessage/listener heuristics. The DOM heuristics are pure Python and always run; if `semgrep` isn't installed, that part is skipped. A standalone `semgrep_report.html` is written and a summary is folded into the main report.
+> **Stage 4** (Crawl) runs `gospider`, `katana` and `waymore` (`waymore -i <domain> -mode U -oU waymore-urs.txt`). JavaScript files — including those found only in `waymore`'s archived data — are flagged, cataloged in `reports/04-endpoints.html`, and fed to Stage 5 for download and Stage 6 for analysis.
 >
-> **Stage 8** (Exposure) writes its full dork lists (`dorks.txt`, `google_dorks.txt`) regardless of which tools are present. LeakIX is queried programmatically via its JSON API (key from `exposure.leakix.api_key` or the `LEAKIX_API_KEY` env var); Gitminer3 is skipped if missing; Google dorking is skipped unless `tavily-python` is installed and `TAVILY_API_KEY` is set.
+> **Stage 5** (Asset Collection) needs no external binary — it uses the bundled `requests` library to download files. If `prettier` (or `npx`) is available it also pretty-prints the downloaded JavaScript for readable client-side review; if not, that step is skipped.
+>
+> **Stage 6** (JS Analysis) runs `semgrep` (a broad set of rule packs) over the collected JavaScript and adds regex-based DOM source/sink/postMessage/listener heuristics. The DOM heuristics are pure Python and always run; if `semgrep` isn't installed, that part is skipped. A standalone `reports/06-js-analysis.html` is written.
+>
+> **Stage 9** (Exposure) writes its full dork lists (`dorks.txt`, `google_dorks.txt`) regardless of which tools are present. LeakIX is queried programmatically via its JSON API (key from `exposure.leakix.api_key` or the `LEAKIX_API_KEY` env var); Gitminer3 is skipped if missing; Google dorking is skipped unless `tavily-python` is installed and `TAVILY_API_KEY` is set.
 
 ---
 
@@ -111,7 +120,7 @@ export GITHUB_TOKEN=".."
 export INTELX_KEY=".."
 export TAVILY_API_KEY=".."
 
-# Full run — all 8 stages
+# Full run — all 10 stages
 python orchestrator.py -d example.com
 
 # Include company name for LinkedIn enumeration + GitHub/Google dorks
@@ -121,10 +130,12 @@ python orchestrator.py -d example.com -c "Acme Corp"
 python orchestrator.py -d example.com --ip-list targets_ips.txt
 
 # Run specific stages only
-#   1=subs 2=validate 3=js 4=collect 5=jsanalysis 6=cloud 7=email 8=exposure 9=report
+#   1=subs 2=validate 3=recon(gowitness+nuclei) 4=crawl 5=collect
+#   6=jsanalysis 7=cloud 8=email 9=exposure 10=report
 python orchestrator.py -d example.com --stages 1,2
-python orchestrator.py -d example.com --stages 3,4,8      # crawl, download JS, report
-python orchestrator.py -d example.com -c "Acme Corp" --stages 7,8   # exposure OSINT + report
+python orchestrator.py -d example.com --stages 4,5,10     # crawl, download JS, report
+python orchestrator.py -d example.com --stages 2,3        # validate + screenshots/nuclei
+python orchestrator.py -d example.com -c "Acme Corp" --stages 9,10   # exposure OSINT + report
 
 # Check which tools are installed before running
 python orchestrator.py -d example.com --check-tools
@@ -157,20 +168,36 @@ validation:
     threads: 50
     extra_args: ["-screenshot", "-screenshot-timeout", "10"]
 
-# Stage 4 — asset download (JS/JSON/config) + Prettier formatting
+# Stage 3 — screenshots (gowitness) + vulnerability scan (nuclei)
+recon:
+  gowitness:
+    timeout: 0            # no timeout — never killed before finishing
+    report_server: true   # launch `gowitness report server` (detached, never killed)
+    report_host: "0.0.0.0"
+  nuclei:
+    timeout: 0            # no timeout
+    # extra_args: ["-severity", "critical,high,medium"]
+
+# Stage 4 — crawl; waymore pulls historical/archived URLs
+js_enum:
+  waymore:
+    enabled: true
+    mode: "U"            # -mode U = URLs only
+
+# Stage 5 — asset download (JS/JSON/config) + Prettier formatting
 collect:
   workers: 10            # concurrent download threads
   timeout: 30           # per-file HTTP timeout (seconds)
   prettier:
     enabled: true       # pretty-print downloaded JS (uses npx/global prettier)
 
-# Stage 5 — client-side JS analysis (semgrep + DOM heuristics)
+# Stage 6 — client-side JS analysis (semgrep + DOM heuristics)
 js_analysis:
   enabled: true
   timeout: 0            # per-directory semgrep timeout (0 = no limit)
   dom_scan: true        # regex DOM source/sink/postMessage/listener heuristics
 
-# Stage 7 — IntelX phonebook search + LinkedIn username scraping
+# Stage 8 — IntelX phonebook search + LinkedIn username scraping
 #   IntelX API key comes from the INTELX_KEY environment variable (not config)
 email:
   intelx:
@@ -178,7 +205,7 @@ email:
   linkedin2username:
     sleep: 30            # -s: seconds between LinkedIn page requests
 
-# Stage 8 — exposure / secret discovery
+# Stage 9 — exposure / secret discovery
 exposure:
   leakix:
     api_key: ""              # leakix.net API key (or set LEAKIX_API_KEY env var)
@@ -204,73 +231,74 @@ Full annotated config with every available option is in [`config.yaml`](config.y
 
 ## Output
 
-Each run writes to `output/<domain>/<timestamp>/`:
+Each run writes to `output/<domain>/<timestamp>/`, with every stage in its own numbered sub-directory and all HTML reports under `reports/`:
 
 ```
 output/example.com/20240501_130000/
-├── ip_resolution.json        # --ip-list: per-IP PTR/FQDN/validation results
-├── ip_fqdns.txt              # --ip-list: FCrDNS-validated FQDNs
-├── ip_fqdns_all.txt          # --ip-list: every PTR-derived FQDN
-├── subdomains_all.txt        # merged deduplicated subdomains
-├── subfinder.txt             # per-tool raw output
-├── subscraper.txt
-├── bbot_output/
-├── dnsgen_out.txt            # permutation candidates
-├── resolved_subdomains.txt   # DNS-verified live subdomains
-├── httpx.json                # HTTP probe results (JSON lines)
-├── live_urls.txt             # input for crawlers
-├── gospider/                 # crawler output
-├── katana.txt
-├── endpoints_all.txt         # merged crawled URLs
-├── collected/                # Stage 4 — downloaded assets, organized per asset
-│   ├── <asset-domain>/
-│   │   ├── js/               # downloaded JavaScript (Prettier-formatted)
-│   │   ├── json/             # downloaded JSON
-│   │   └── config/           # downloaded config-like files
-│   ├── asset_manifest.json   # every download: url, asset, kind, path, status
-│   └── collected_files.txt   # human-readable directory listing
-├── semgrep_report.html       # Stage 5 — standalone JS analysis report (per asset)
-├── semgrep_raw/              # Stage 5 — raw per-directory semgrep JSON
-├── cloud_enum.txt
-├── pycroburst.txt
-├── emails_all.txt            # Stage 7 — IntelX emails + LinkedIn-derived emails
-├── usernames_all.txt         # Stage 7 — LinkedIn username candidates
-├── linkedin/                 # Stage 7 — linkedin2username per-format output files
-├── dorks.txt                 # Stage 8 — Gitminer3 dorks (domain-scoped)
-├── google_dorks.txt          # Stage 8 — Google dork list (domain/company-scoped)
-├── google_dork_catalog.txt   # Stage 8 — result titles + URLs, grouped per query
-├── google_dork_urls.txt      # Stage 8 — deduped result URLs (all dorks)
-├── google_dork_downloads/     # Stage 8 — downloaded result files (+ _manifest.json)
-├── leakix.json               # Stage 8 — raw LeakIX results
-├── google_dork_findings.json # Stage 8 — Tavily results + catalog per query
-├── gitminer/                 # Stage 8 — Gitminer3 downloads, CSV + markdown report
-├── report_example.com.html   # interactive HTML report
-├── summary.json              # machine-readable stats
-├── config_snapshot.yaml      # config used for this run
-└── agente.log                # full debug log
+├── reports/                    # Stage 10 — one self-contained HTML report per stage
+│   ├── index.html              #   executive dashboard + links + charts (open this)
+│   ├── 01-subdomains.html
+│   ├── 02-live-hosts.html
+│   ├── 03-nuclei.html          #   nuclei findings grouped by host
+│   ├── 04-endpoints.html       #   endpoints + JS + API + waymore catalog (JS flagged)
+│   ├── 05-assets.html
+│   ├── 06-js-analysis.html     #   semgrep + DOM heuristics
+│   ├── 07-cloud.html
+│   ├── 08-email.html
+│   ├── 09-exposure.html
+│   ├── ip-fqdn.html
+│   └── secrets.html
+├── logs/
+│   └── agente.log              # full debug log
+├── 00-ip-resolve/              # --ip-list: PTR/FQDN/FCrDNS results
+├── 01-subdomains/              # subfinder.txt, subscraper.txt, bbot_output/, subdomains_all.txt
+├── 02-validation/              # dnsgen_out.txt, resolved_subdomains.txt, httpx.json, live_urls.txt
+├── 03-screenshots/             # Stage 3 — gowitness
+│   ├── live-urls.txt           #   input handed to gowitness + nuclei
+│   ├── screenshots/            #   gowitness screenshots
+│   ├── gowitness.sqlite3       #   gowitness DB (served by `report server`)
+│   ├── gowitness_server.log    #   detached report-server log
+│   └── nuclei-results.out      #   raw nuclei output
+├── 04-crawl/                   # Stage 4 — gospider/, katana.txt, waymore-urs.txt, endpoints_all.txt
+├── 05-assets/                  # Stage 5 — collected assets, organized per asset
+│   └── collected/
+│       ├── <asset-domain>/{js,json,config}/
+│       ├── asset_manifest.json
+│       └── collected_files.txt
+├── 06-js-analysis/             # Stage 6 — semgrep_raw/ (raw per-directory JSON)
+├── 07-cloud/                   # cloud_enum.txt, pycroburst.txt
+├── 08-email/                   # emails_all.txt, usernames_all.txt, linkedin/
+├── 09-exposure/                # dorks.txt, google_dork_*, leakix.json, gitminer/
+├── summary.json                # machine-readable stats
+└── config_snapshot.yaml        # config used for this run
 ```
 
-Runs never overwrite each other — each gets its own timestamped directory.
+Runs never overwrite each other — each gets its own timestamped directory. The
+`gowitness report server` (Stage 3) keeps running after the scan so you can
+browse the screenshot gallery at `http://0.0.0.0:7171` (see `reports/index.html`).
 
 ---
 
-## HTML Report
+## HTML Reports
 
-The report is a self-contained single HTML file. No server required — open it directly in a browser.
+Results are **split into one self-contained HTML file per stage** under `reports/`,
+so no single page is overloaded. All pages share a common dark theme and a top
+navigation bar to jump between them. No server required — open `reports/index.html`
+directly in a browser.
 
-**Sections:**
-- **Dashboard** — stat cards for subdomains, live hosts, endpoints, JS collected, cloud assets, emails, IP→FQDN, exposures, secrets
-- **Charts** — subdomain source breakdown, HTTP status distribution, tool execution times
-- **Subdomains** — filterable table with source attribution per subdomain (includes IP-derived FQDNs, source `ptr`)
-- **Live Hosts** — HTTP status, page title, detected tech stack, IP
-- **IP → FQDN** — reverse-DNS results per supplied IP with FCrDNS validation status
-- **Endpoints** — all discovered URLs, JS files tab, API paths tab
-- **Collected Assets** — per-asset download counts (JS/JSON/config) with download/skip/fail totals
-- **JS Analysis** — semgrep findings + DOM source/sink/postMessage counts per asset, linking to the full `semgrep_report.html`
-- **Cloud** — S3 buckets, Azure blob storage, GCP, serverless functions
-- **Email Intel** — email addresses with source, LinkedIn usernames
-- **Exposure OSINT** — LeakIX leaks, GitHub secret hits (Gitminer3), and Google dork findings
-- **Secrets** — regex-matched patterns from crawled JS (verify manually)
+**Pages:**
+- **index.html** — executive dashboard: stat cards, charts (subdomain sources, HTTP status, nuclei severity, tool times), a gowitness-server link, and quick links to every sub-report
+- **01-subdomains.html** — source attribution per subdomain (includes IP-derived FQDNs, source `ptr`)
+- **02-live-hosts.html** — HTTP status, page title, detected tech stack, IP
+- **03-nuclei.html** — nuclei findings grouped by host, with severity, template, URL, and extracted data
+- **04-endpoints.html** — all discovered URLs (JS flagged), a JS-files tab, an API-paths tab, and a **waymore** archive tab with JS-flagged historical URLs
+- **05-assets.html** — per-asset download counts (JS/JSON/config) with download/skip/fail totals
+- **06-js-analysis.html** — semgrep findings + DOM source/sink/postMessage heuristics per asset
+- **07-cloud.html** — S3 buckets, Azure blob storage, GCP, serverless functions
+- **08-email.html** — email addresses with source, LinkedIn usernames
+- **09-exposure.html** — LeakIX leaks, GitHub secret hits (Gitminer3), Google dork findings
+- **ip-fqdn.html** — reverse-DNS results per supplied IP with FCrDNS validation status
+- **secrets.html** — regex-matched patterns from crawled JS (verify manually)
 
 All tables have live search, column sort, and pagination.
 
@@ -280,15 +308,16 @@ All tables have live search, column sort, and pagination.
 
 | # | Name | Tools | Input | Output |
 |---|------|-------|-------|--------|
-| 1 | Subdomain Enumeration | subfinder, subscraper, bbot | domain | `subdomains_all.txt` |
-| 2 | Validation | dnsgen, puredns, httpx | subdomains | `resolved_subdomains.txt`, `httpx.json`, `live_urls.txt` |
-| 3 | JS & Endpoint Crawl | gospider, katana | live URLs | `endpoints_all.txt` |
-| 4 | Asset Collection | `requests` (built-in), Prettier (optional) | Stage 3 crawl output | `collected/<asset>/{js,json,config}/`, `asset_manifest.json` |
-| 5 | JS Analysis | semgrep (optional), DOM heuristics (built-in) | Stage 4 collected JS | `semgrep_report.html`, `semgrep_raw/` |
-| 6 | Cloud Infrastructure | cloud_enum, pycroburst | domain keyword | cloud asset lists |
-| 7 | Email Intelligence | IntelX/phonebook.cz API, linkedin2username | domain, company | `emails_all.txt`, `usernames_all.txt`, `linkedin/` |
-| 8 | Exposure & Secrets | LeakIX, Gitminer3, Google dorks (Tavily API) | domain, company | `dorks.txt`, `google_dork_catalog.txt`, `google_dork_downloads/`, `leakix.json`, `gitminer/` |
-| 9 | Report | — | all stage outputs | `report_<domain>.html`, `summary.json` |
+| 1 | Subdomain Enumeration | subfinder, subscraper, bbot | domain | `01-subdomains/subdomains_all.txt` |
+| 2 | Validation | dnsgen, puredns, httpx | subdomains | `02-validation/{resolved_subdomains.txt, httpx.json, live_urls.txt}` |
+| 3 | Screenshots & Vuln Scan | gowitness (+ report server), nuclei | live URLs | `03-screenshots/{screenshots/, gowitness.sqlite3, nuclei-results.out}`, `reports/03-nuclei.html` |
+| 4 | JS & Endpoint Crawl | gospider, katana, waymore | live URLs + domain | `04-crawl/{endpoints_all.txt, waymore-urs.txt}` |
+| 5 | Asset Collection | `requests` (built-in), Prettier (optional) | Stage 4 crawl output | `05-assets/collected/<asset>/{js,json,config}/`, `asset_manifest.json` |
+| 6 | JS Analysis | semgrep (optional), DOM heuristics (built-in) | Stage 5 collected JS | `reports/06-js-analysis.html`, `06-js-analysis/semgrep_raw/` |
+| 7 | Cloud Infrastructure | cloud_enum, pycroburst | domain keyword | cloud asset lists |
+| 8 | Email Intelligence | IntelX/phonebook.cz API, linkedin2username | domain, company | `08-email/{emails_all.txt, usernames_all.txt, linkedin/}` |
+| 9 | Exposure & Secrets | LeakIX, Gitminer3, Google dorks (Tavily API) | domain, company | `09-exposure/{dorks.txt, google_dork_*, leakix.json, gitminer/}` |
+| 10 | Report | — | all stage outputs | `reports/*.html` (index + per stage), `summary.json` |
 
 ---
 
@@ -323,7 +352,8 @@ Pass `--skip-missing` to suppress the prompt and proceed automatically.
 ## Notes
 
 - **Authorized use only.** Run AgentE only against targets you have explicit permission to test.
-- **Tool timeouts.** Each tool's `timeout` in `config.yaml` is in seconds; set it to `0` (or remove it) for **no timeout**, so the tool runs to completion before the next stage starts. Long-running tools (`bbot`, `cloud_enum`, `pycroburst`) ship with `timeout: 0` for this reason — they are never killed mid-scan.
+- **Tool timeouts.** Each tool's `timeout` in `config.yaml` is in seconds; set it to `0` (or remove it) for **no timeout**, so the tool runs to completion before the next stage starts. Long-running tools (`bbot`, `gowitness`, `nuclei`, `waymore`, `cloud_enum`, `pycroburst`) ship with `timeout: 0` for this reason — they are never killed mid-scan.
+- **gowitness report server.** After screenshotting (Stage 3), AgentE launches `gowitness report server --host 0.0.0.0` as a **detached** background process. It is never killed by AgentE — it keeps serving the screenshot gallery (default `http://0.0.0.0:7171`) during and after the run. Stop it yourself when you're done (e.g. by PID from the log).
 - **Progress tracking.** While stages run, AgentE logs a heartbeat of which tools are still executing and for how long (e.g. `[progress] 2 tool(s) running: bbot (412s), cloud_enum (380s)`). Tune the cadence with `global.progress_interval` (seconds; `0` disables it).
 - **Rate limits.** Default puredns rate is 3000 req/s. Lower it on slow networks or shared resolvers.
 - **linkedin2username.** Invoked as `linkedin2username -s <sleep> -c "<company>" -n "<domain>" -o linkedin`, where `-c` is the orchestrator's `-c/--company` and `-n` is its `-d/--domain`. It authenticates through an **interactive browser login** (opens LinkedIn and waits for you to press Enter), so it runs **attached to your terminal** — its output is shown live and you can answer its prompts — and it **never times out**: the pipeline waits until it finishes on its own rather than killing it. Output lands in `<run>/linkedin/`. Tune the sleep with `email.linkedin2username.sleep`.

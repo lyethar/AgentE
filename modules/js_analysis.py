@@ -1,12 +1,12 @@
 """
-Stage 5 — Client-Side JavaScript Analysis (semgrep + DOM heuristics)
+Stage 6 — Client-Side JavaScript Analysis (semgrep + DOM heuristics)
 
-Runs immediately after Stage 4 (download + Prettier beautification). For every
+Runs immediately after Stage 5 (download + Prettier beautification). For every
 directory under ``collected/`` that holds ``*.js`` files, semgrep is executed
 against those files with a fixed set of rule packs, and a regex-based DOM
 heuristic scan flags sources / sinks / postMessage / event listeners. All
-findings are aggregated, a standalone ``semgrep_report.html`` is written
-(grouped per asset), and a summary is folded into the main AgentE report.
+findings are aggregated, a standalone ``reports/06-js-analysis.html`` is written
+(grouped per asset), and a summary is folded into the main AgentE report index.
 
 semgrep is optional: if it is not on PATH the DOM heuristics still run (they are
 pure Python), and the stage degrades gracefully rather than failing.
@@ -675,14 +675,14 @@ def _aggregate(findings, dom_findings):
     return counts, by_asset
 
 
-def _analyze_blocking(root: Path, outdir: Path, cfg: dict) -> dict:
+def _analyze_blocking(root: Path, stage_dir: Path, reports_dir: Path, cfg: dict) -> dict:
     configs = cfg.get("configs") or CONFIGS
     do_dom = cfg.get("dom_scan", True)
     timeout = cfg.get("timeout")
     if isinstance(timeout, (int, float)) and timeout <= 0:
         timeout = None
-    raw_dir = outdir / "semgrep_raw"
-    report_path = outdir / "semgrep_report.html"
+    raw_dir = stage_dir / "semgrep_raw"
+    report_path = reports_dir / "06-js-analysis.html"
 
     dirs = list(find_js_dirs(str(root)))
     if not dirs:
@@ -736,16 +736,17 @@ def _analyze_blocking(root: Path, outdir: Path, cfg: dict) -> dict:
     }
 
 
-async def analyze_js(outdir: Path, cfg: dict, collect_data: dict) -> dict:
-    log.info("=== Stage 5: Client-Side JavaScript Analysis (semgrep + DOM) ===")
+async def analyze_js(stage_dir: Path, reports_dir: Path, cfg: dict, collect_data: dict) -> dict:
+    log.info("=== Stage 6: Client-Side JavaScript Analysis (semgrep + DOM) ===")
     acfg = cfg.get("js_analysis", {})
+    report_path = reports_dir / "06-js-analysis.html"
     if not acfg.get("enabled", True):
         log.info("JS analysis: disabled in config — skipping")
-        return _empty("disabled in config")
+        return _empty("disabled in config", str(report_path))
 
-    root = Path(collect_data.get("root") or (outdir / "collected"))
-    if not root.exists():
+    root = Path(collect_data.get("root") or "")
+    if not root or not root.exists():
         log.warning("JS analysis: collected directory not found: %s", root)
-        return _empty(f"collected directory not found: {root}")
+        return _empty(f"collected directory not found: {root}", str(report_path))
 
-    return await asyncio.to_thread(_analyze_blocking, root, outdir, acfg)
+    return await asyncio.to_thread(_analyze_blocking, root, stage_dir, reports_dir, acfg)

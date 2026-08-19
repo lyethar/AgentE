@@ -1,5 +1,5 @@
 """
-Stage 7 — Email & Username Enumeration
+Stage 8 — Email & Username Enumeration
 Tools: IntelX / phonebook.cz phonebook API, linkedin2username (CLI)
 """
 import asyncio
@@ -222,7 +222,7 @@ def _derive_emails(usernames: list[str], domain: str) -> list[str]:
 
 
 async def enumerate_emails(domain: str, company: str, outdir: Path, cfg: dict) -> dict:
-    log.info("=== Stage 7: Email & Username Enumeration ===")
+    log.info("=== Stage 8: Email & Username Enumeration ===")
     email_cfg = cfg.get("email", {})
     intelx_cfg = email_cfg.get("intelx", email_cfg.get("phonebooks", {}))
 

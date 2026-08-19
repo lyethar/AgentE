@@ -3,6 +3,7 @@ import itertools
 import logging
 import platform
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -213,6 +214,59 @@ async def run_tool(
         )
     finally:
         _deregister_tool(token)
+
+
+def spawn_detached(
+    cmd: list[str],
+    tool_name: str,
+    cwd: Path | None = None,
+    env: dict | None = None,
+    log_file: Path | None = None,
+) -> dict:
+    """
+    Launch a long-lived background service and return WITHOUT waiting for it.
+
+    Used for processes that are meant to keep running after the pipeline moves
+    on — e.g. ``gowitness report server``, which serves a web UI indefinitely.
+    The child is fully detached so it is never killed when AgentE exits, and its
+    output is redirected to *log_file* (or discarded) so it does not clutter the
+    console. Returns a dict describing the launch (never raises).
+    """
+    resolved = resolve_tool(cmd[0])
+    if resolved is None:
+        log.warning("Service not found: %s — not started", cmd[0])
+        return {"tool": tool_name, "started": False, "pid": None,
+                "reason": f"'{cmd[0]}' not found in PATH or tools/bin/"}
+
+    resolved_cmd = [str(resolved), *[str(c) for c in cmd[1:]]]
+    out = open(log_file, "ab") if log_file else subprocess.DEVNULL
+
+    # Detach from the parent process group so the service survives our exit.
+    kwargs: dict = {"cwd": str(cwd) if cwd else None, "env": env,
+                    "stdout": out, "stderr": out,
+                    "stdin": subprocess.DEVNULL}
+    if _IS_WINDOWS:
+        kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    else:
+        kwargs["start_new_session"] = True
+
+    try:
+        proc = subprocess.Popen(resolved_cmd, **kwargs)  # noqa: S603
+    except Exception as exc:
+        log.warning("[%s] Failed to launch background service: %s", tool_name, exc)
+        return {"tool": tool_name, "started": False, "pid": None, "reason": str(exc)}
+    finally:
+        if log_file and out not in (subprocess.DEVNULL,):
+            try:
+                out.close()
+            except Exception:
+                pass
+
+    log.info("[%s] Background service started (pid=%s) — left running", tool_name, proc.pid)
+    return {"tool": tool_name, "started": True, "pid": proc.pid, "reason": ""}
 
 
 async def run_parallel(*coros, max_concurrency: int = 4):

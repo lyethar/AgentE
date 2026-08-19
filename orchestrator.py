@@ -32,9 +32,11 @@ from modules.exposure    import enumerate_exposure
 from modules.ip_resolve  import resolve_ips
 from modules.js_analysis import analyze_js
 from modules.js_enum     import enumerate_js
+from modules.recon_scan  import run_recon
 from modules.reporting  import generate_report
 from modules.subdomains import enumerate_subdomains
 from modules.validation import validate_subdomains
+from utils.layout       import build_layout
 from utils.logger       import setup_logger
 from utils.runner       import progress_monitor
 
@@ -49,10 +51,10 @@ BANNER = r"""
        |___/    github.com/lyethar/AgentE
 """
 
-ALL_STAGES = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+ALL_STAGES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 # Maps each tool binary to the stage that uses it and an install hint.
-# Stage 4 (asset collection) uses the bundled 'requests' library plus an
+# Stage 5 (asset collection) uses the bundled 'requests' library plus an
 # optional Prettier (npx) for formatting, so it has no required pre-flight entry.
 TOOL_MANIFEST: list[dict] = [
     # stage, binary, install hint
@@ -62,14 +64,17 @@ TOOL_MANIFEST: list[dict] = [
     {"stage": 2, "bin": "dnsgen",           "hint": "pip install dnsgen"},
     {"stage": 2, "bin": "puredns",          "hint": "go install github.com/d3mondev/puredns/v2@latest"},
     {"stage": 2, "bin": "httpx",            "hint": "go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest"},
-    {"stage": 3, "bin": "gospider",         "hint": "go install github.com/jaeles-project/gospider@latest"},
-    {"stage": 3, "bin": "katana",           "hint": "go install github.com/projectdiscovery/katana/cmd/katana@latest"},
-    {"stage": 5, "bin": "semgrep",          "hint": "pip install semgrep  (DOM heuristics still run without it)"},
-    {"stage": 6, "bin": "cloud_enum",       "hint": "pip install cloud-enum  OR  https://github.com/initstring/cloud_enum"},
-    {"stage": 6, "bin": "pycroburst",        "hint": "python install_tools.py pycroburst",        "managed": True},
-    {"stage": 7, "bin": "linkedin2username", "hint": "python install_tools.py linkedin2username",   "managed": True},
-    {"stage": 8, "bin": "gitminer3",        "hint": "python install_tools.py gitminer3",          "managed": True},
-    # Google dorking (stage 8) uses the Tavily API (a Python package + the
+    {"stage": 3, "bin": "gowitness",        "hint": "Download a release binary: https://github.com/sensepost/gowitness/releases"},
+    {"stage": 3, "bin": "nuclei",           "hint": "sudo apt install nuclei  OR  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"},
+    {"stage": 4, "bin": "gospider",         "hint": "go install github.com/jaeles-project/gospider@latest"},
+    {"stage": 4, "bin": "katana",           "hint": "go install github.com/projectdiscovery/katana/cmd/katana@latest"},
+    {"stage": 4, "bin": "waymore",          "hint": "pip install waymore  OR  https://github.com/xnl-h4ck3r/waymore"},
+    {"stage": 6, "bin": "semgrep",          "hint": "pip install semgrep  (DOM heuristics still run without it)"},
+    {"stage": 7, "bin": "cloud_enum",       "hint": "pip install cloud-enum  OR  https://github.com/initstring/cloud_enum"},
+    {"stage": 7, "bin": "pycroburst",        "hint": "python install_tools.py pycroburst",        "managed": True},
+    {"stage": 8, "bin": "linkedin2username", "hint": "python install_tools.py linkedin2username",   "managed": True},
+    {"stage": 9, "bin": "gitminer3",        "hint": "python install_tools.py gitminer3",          "managed": True},
+    # Google dorking (stage 9) uses the Tavily API (a Python package + the
     # TAVILY_API_KEY env var), not a PATH binary: pip install tavily-python
 ]
 
@@ -157,9 +162,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-i", "--ip-list",  default="",
                    help="Optional file of IPs/CIDRs to reverse-resolve and validate (FQDN/FCrDNS)")
     p.add_argument("--config",         default="config.yaml", help="Path to config.yaml")
-    p.add_argument("--stages",         default="1,2,3,4,5,6,7,8,9",
-                   help="Comma-separated stages: 1=subs,2=validate,3=js,4=collect,"
-                        "5=jsanalysis,6=cloud,7=email,8=exposure,9=report")
+    p.add_argument("--stages",         default="1,2,3,4,5,6,7,8,9,10",
+                   help="Comma-separated stages: 1=subs,2=validate,3=recon(gowitness+nuclei),"
+                        "4=crawl,5=collect,6=jsanalysis,7=cloud,8=email,9=exposure,10=report")
     p.add_argument("-o", "--output",      default="",  help="Override output directory")
     p.add_argument("-v", "--verbose",     action="store_true")
     p.add_argument("--skip-missing",      action="store_true",
@@ -187,12 +192,13 @@ def prepare_output_dir(domain: str, cfg: dict, override: str = "") -> Path:
     return outdir
 
 
-async def run(args: argparse.Namespace, cfg: dict, log) -> int:
+async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -> int:
     stages = set(int(s.strip()) for s in args.stages.split(",") if s.strip())
     domain  = args.domain.lower().strip()
     company = args.company or domain.split(".")[0]
 
-    outdir = prepare_output_dir(domain, cfg, args.output)
+    outdir  = dirs["root"]
+    reports = dirs["reports"]
     log.info("Output directory: %s", outdir)
 
     # Persist config snapshot
@@ -203,7 +209,13 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
     sub_data   = {"all": [], "by_tool": {}, "merged_file": "", "tool_results": []}
     val_data   = {"resolved_subdomains": [], "live_hosts": [], "live_urls": [],
                   "urls_file": "", "resolved_file": "", "tool_results": []}
+    recon_data = {"findings": [], "by_host": {},
+                  "counts": {"total": 0, "critical": 0, "high": 0, "medium": 0,
+                             "low": 0, "info": 0, "hosts": 0},
+                  "screenshots": 0, "server": {"started": False},
+                  "report_file": "", "tool_results": []}
     js_data    = {"endpoints": [], "js_files": [], "api_paths": [],
+                  "waymore_urls": [], "waymore_js": [],
                   "potential_secrets": [], "tool_results": []}
     collect_data = {"root": "", "counts": {"downloaded": 0, "skipped": 0, "failed": 0},
                     "by_asset": {}, "total_urls": 0, "js_count": 0,
@@ -232,11 +244,11 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
 
     # ── Optional pre-step: IP → FQDN resolution (--ip-list) ──
     if args.ip_list:
-        ip_data = await resolve_ips(Path(args.ip_list), outdir, cfg)
+        ip_data = await resolve_ips(Path(args.ip_list), dirs["ip_resolve"], cfg)
 
     # ── Stage 1: Subdomains ──
     if 1 in stages:
-        sub_data = await enumerate_subdomains(domain, outdir, cfg)
+        sub_data = await enumerate_subdomains(domain, dirs["subdomains"], cfg)
 
     # Fold IP-derived (FCrDNS-validated) FQDNs into the subdomain pool so they
     # flow through validation / crawling and appear in the report.
@@ -248,7 +260,7 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
         sub_data.setdefault("by_tool", {})["ptr"] = sorted(
             set(sub_data.get("by_tool", {}).get("ptr", [])) | set(new_fqdns)
         )
-        merged = Path(sub_data.get("merged_file") or (outdir / "subdomains_all.txt"))
+        merged = Path(sub_data.get("merged_file") or (dirs["subdomains"] / "subdomains_all.txt"))
         existing = set(merged.read_text(errors="replace").split()) if merged.exists() else set()
         merged.write_text("\n".join(sorted(existing | set(combined))), encoding="utf-8")
         sub_data["merged_file"] = str(merged)
@@ -259,44 +271,50 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
         subs_file = Path(sub_data.get("merged_file", ""))
         if not subs_file.exists():
             # create a placeholder so puredns/httpx still run with empty input
-            subs_file = outdir / "subdomains_all.txt"
+            subs_file = dirs["subdomains"] / "subdomains_all.txt"
             subs_file.write_text("", encoding="utf-8")
-        val_data = await validate_subdomains(subs_file, outdir, cfg)
+        val_data = await validate_subdomains(subs_file, dirs["validation"], cfg)
 
-    # ── Stage 3: JS Enumeration (depends on Stage 2) ──
+    # ── Stage 3: Screenshots & Vuln Scan — gowitness + nuclei (depends on Stage 2) ──
     if 3 in stages:
         urls_file = Path(val_data.get("urls_file", ""))
-        if not urls_file.exists():
-            urls_file = outdir / "live_urls.txt"
-            urls_file.write_text("", encoding="utf-8")
-        js_data = await enumerate_js(urls_file, outdir, cfg)
+        recon_data = await run_recon(domain, urls_file, dirs["recon"], reports, cfg)
 
-    # ── Stage 4: Asset Collection & JS Download (depends on Stage 3) ──
+    # ── Stage 4: Crawl / JS Enumeration — gospider, katana, waymore (depends on Stage 2) ──
     if 4 in stages:
-        collect_data = await collect_assets(outdir, cfg, js_data)
+        urls_file = Path(val_data.get("urls_file", ""))
+        if not urls_file.exists():
+            urls_file = dirs["validation"] / "live_urls.txt"
+            urls_file.write_text("", encoding="utf-8")
+        js_data = await enumerate_js(domain, urls_file, dirs["crawl"], cfg)
 
-    # ── Stage 5: Client-Side JS Analysis — semgrep + DOM (depends on Stage 4) ──
+    # ── Stage 5: Asset Collection & JS Download (depends on Stage 4) ──
     if 5 in stages:
-        jsa_data = await analyze_js(outdir, cfg, collect_data)
+        collect_data = await collect_assets(dirs["crawl"], dirs["assets"], cfg, js_data)
 
-    # ── Stage 6 & 7 run in parallel (independent of each other) ──
+    # ── Stage 6: Client-Side JS Analysis — semgrep + DOM (depends on Stage 5) ──
+    if 6 in stages:
+        jsa_data = await analyze_js(dirs["jsanalysis"], reports, cfg, collect_data)
+
+    # ── Stage 7 & 8 run in parallel (independent of each other) ──
     async def _cloud():
-        return await enumerate_cloud(domain, outdir, cfg) if 6 in stages else cloud_data
+        return await enumerate_cloud(domain, dirs["cloud"], cfg) if 7 in stages else cloud_data
 
     async def _email():
-        return await enumerate_emails(domain, company, outdir, cfg) if 7 in stages else email_data
+        return await enumerate_emails(domain, company, dirs["email"], cfg) if 8 in stages else email_data
 
     cloud_data, email_data = await asyncio.gather(_cloud(), _email())
 
-    # ── Stage 8: Exposure & Secrets Discovery (LeakIX, Gitminer3, Google dorks) ──
-    if 8 in stages:
-        exposure_data = await enumerate_exposure(domain, company, outdir, cfg)
-
-    # ── Stage 9: Report ──
+    # ── Stage 9: Exposure & Secrets Discovery (LeakIX, Gitminer3, Google dorks) ──
     if 9 in stages:
+        exposure_data = await enumerate_exposure(domain, company, dirs["exposure"], cfg)
+
+    # ── Stage 10: Report ──
+    if 10 in stages:
         report_path = generate_report(
-            domain, outdir, sub_data, val_data, js_data,
+            domain, reports, sub_data, val_data, js_data,
             collect_data, cloud_data, email_data, exposure_data, ip_data, jsa_data,
+            recon_data,
         )
         log.info("HTML report: file://%s", report_path.resolve())
 
@@ -319,7 +337,12 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
               f"(validated FQDNs: {len(ip_data.get('validated_fqdns', []))})")
     print(f"  Subdomains  : {len(sub_data['all'])}")
     print(f"  Live hosts  : {len(val_data['live_hosts'])}")
-    print(f"  Endpoints   : {len(js_data['endpoints'])}")
+    print(f"  Screenshots : {recon_data['screenshots']}")
+    print(f"  Nuclei      : {recon_data['counts'].get('total', 0)} findings "
+          f"(crit={recon_data['counts'].get('critical', 0)} "
+          f"high={recon_data['counts'].get('high', 0)})")
+    print(f"  Endpoints   : {len(js_data['endpoints'])} "
+          f"(waymore={len(js_data.get('waymore_urls', []))})")
     print(f"  JS collected: {collect_data['counts'].get('downloaded', 0)} "
           f"(across {len(collect_data['by_asset'])} assets)")
     print(f"  JS findings : {jsa_data['counts'].get('findings', 0)} semgrep "
@@ -347,7 +370,13 @@ async def run(args: argparse.Namespace, cfg: dict, log) -> int:
             "ip_fqdns_validated": len(ip_data.get("validated_fqdns", [])),
             "subdomains":     len(sub_data["all"]),
             "live_hosts":     len(val_data["live_hosts"]),
+            "screenshots":    recon_data["screenshots"],
+            "nuclei_findings": recon_data["counts"].get("total", 0),
+            "nuclei_critical": recon_data["counts"].get("critical", 0),
+            "nuclei_high":     recon_data["counts"].get("high", 0),
             "endpoints":      len(js_data["endpoints"]),
+            "waymore_urls":   len(js_data.get("waymore_urls", [])),
+            "waymore_js":     len(js_data.get("waymore_js", [])),
             "files_collected": collect_data["counts"].get("downloaded", 0),
             "js_formatted":   collect_data.get("prettier", {}).get("formatted", 0),
             "assets":         len(collect_data["by_asset"]),
@@ -378,9 +407,6 @@ def main():
     if args.output:
         cfg.setdefault("global", {})["output_base"] = args.output
 
-    outdir = prepare_output_dir(args.domain, cfg, args.output)
-    log    = setup_logger("agente", outdir, verbose=args.verbose)
-
     if args.install_tools:
         rc = subprocess.run([sys.executable, "install_tools.py"]).returncode
         sys.exit(rc)
@@ -393,10 +419,15 @@ def main():
     if args.check_tools:
         sys.exit(0)
 
+    # Build the run directory + per-stage layout only once we're actually scanning.
+    outdir = prepare_output_dir(args.domain, cfg, args.output)
+    dirs   = build_layout(outdir)
+    log    = setup_logger("agente", dirs["logs"], verbose=args.verbose)
+
     log.info("AgentE starting | target=%s | stages=%s", args.domain, args.stages)
 
     try:
-        rc = asyncio.run(run(args, cfg, log))
+        rc = asyncio.run(run(args, cfg, log, dirs))
         sys.exit(rc)
     except KeyboardInterrupt:
         log.warning("Interrupted by user")

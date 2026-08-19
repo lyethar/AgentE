@@ -1,505 +1,40 @@
 """
-Stage 9 — Interactive HTML Report Generation
-Produces a self-contained single-file HTML report with:
-  - Executive summary dashboard
-  - Filterable/sortable DataTables for each section
-  - Chart.js visualizations
-  - Dark hacker aesthetic
+Stage 10 — HTML Report Generation (split, one file per stage)
+
+Historically AgentE produced a single, enormous tabbed HTML file. That page grew
+unwieldy, so results are now split into one self-contained HTML report per
+stage, all written into the run's ``reports/`` directory and sharing the common
+shell defined in ``utils.htmlreport``:
+
+    reports/
+      index.html            executive dashboard + links to every sub-report
+      01-subdomains.html
+      02-live-hosts.html
+      03-nuclei.html        (written by Stage 3 / recon_scan)
+      04-endpoints.html     endpoints + JS + API + waymore catalog
+      05-assets.html
+      06-js-analysis.html   (written by Stage 6 / js_analysis)
+      07-cloud.html
+      08-email.html
+      09-exposure.html
+      ip-fqdn.html
+      secrets.html
+
+``generate_report`` writes the pages it owns and returns the path to
+``index.html`` (the entry point).
 """
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
+
+from utils.htmlreport import NAV, esc, page
 
 log = logging.getLogger("agente.reporting")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# HTML template (Bootstrap 5 + DataTables + Chart.js, dark theme)
-# ──────────────────────────────────────────────────────────────────────────────
-
-_HTML_TEMPLATE = """\
-<!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AgentE — {target}</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
-<link rel="stylesheet" href="https://cdn.datatables.net/2.0.7/css/dataTables.bootstrap5.min.css">
-<style>
-:root {{
-  --accent: #00ff88;
-  --accent2: #0dcaf0;
-  --bg-card: #0f1117;
-  --bg-page: #080b10;
-  --border: #1e2940;
-}}
-body {{ background: var(--bg-page); font-family: 'Segoe UI', system-ui, sans-serif; }}
-.navbar-brand {{ color: var(--accent) !important; font-weight: 700; letter-spacing: 2px; }}
-.stat-card {{ background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
-              transition: transform .2s; }}
-.stat-card:hover {{ transform: translateY(-3px); }}
-.stat-value {{ font-size: 2.4rem; font-weight: 700; color: var(--accent); }}
-.stat-label {{ color: #8899aa; font-size: .85rem; text-transform: uppercase; letter-spacing: 1px; }}
-.section-card {{ background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; }}
-.section-title {{ color: var(--accent2); font-weight: 600; border-bottom: 1px solid var(--border);
-                  padding-bottom: .5rem; margin-bottom: 1rem; }}
-.badge-source {{ font-size: .7rem; }}
-.nav-pills .nav-link.active {{ background: var(--accent); color: #000 !important; font-weight: 600; }}
-.nav-pills .nav-link {{ color: #aaa; }}
-table.dataTable {{ background: var(--bg-card) !important; }}
-table.dataTable thead th {{ background: #0a0d14 !important; color: var(--accent2) !important;
-                             border-bottom: 2px solid var(--border) !important; }}
-table.dataTable tbody tr {{ background: var(--bg-card) !important; color: #cdd9e5; }}
-table.dataTable tbody tr:hover {{ background: #131822 !important; }}
-.dataTables_wrapper .dataTables_filter input,
-.dataTables_wrapper .dataTables_length select {{
-  background: #131822 !important; color: #cdd9e5 !important;
-  border: 1px solid var(--border) !important; border-radius: 6px;
-}}
-.dataTables_wrapper .dataTables_info,
-.dataTables_wrapper .dataTables_paginate .paginate_button {{
-  color: #8899aa !important;
-}}
-.dataTables_wrapper .dataTables_paginate .paginate_button.current {{
-  background: var(--accent) !important; color: #000 !important;
-  border-radius: 4px; border: none !important;
-}}
-.status-200 {{ color: #00ff88; }}
-.status-301, .status-302 {{ color: #ffc107; }}
-.status-403 {{ color: #fd7e14; }}
-.status-404 {{ color: #dc3545; }}
-.status-500 {{ color: #6f42c1; }}
-.tool-badge-ok {{ background: #0a3d20; color: #00ff88; border: 1px solid #00ff8844; }}
-.tool-badge-skip {{ background: #3d200a; color: #ff8800; border: 1px solid #ff880044; }}
-.secret-snippet {{ font-family: monospace; font-size: .75rem; color: #ff6b6b;
-                   background: #1a0a0a; padding: 4px 8px; border-radius: 4px;
-                   border-left: 3px solid #ff6b6b; }}
-.chart-container {{ position: relative; height: 260px; }}
-.ts {{ color: #556; font-size: .78rem; }}
-</style>
-</head>
-<body>
-
-<nav class="navbar navbar-dark px-4 py-3" style="background:#080b10; border-bottom:1px solid var(--border);">
-  <span class="navbar-brand">&#9670; AgentE</span>
-  <span class="text-muted small">Target: <strong class="text-info">{target}</strong>
-    &nbsp;|&nbsp; Generated: <span class="ts">{generated}</span></span>
-</nav>
-
-<div class="container-fluid py-4 px-4">
-
-<!-- SUMMARY CARDS -->
-<div class="row g-3 mb-4">
-  <div class="col-6 col-md-2">
-    <div class="stat-card p-3 text-center">
-      <div class="stat-value">{total_subdomains}</div>
-      <div class="stat-label">Subdomains</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="stat-card p-3 text-center">
-      <div class="stat-value">{total_live}</div>
-      <div class="stat-label">Live Hosts</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="stat-card p-3 text-center">
-      <div class="stat-value">{total_endpoints}</div>
-      <div class="stat-label">Endpoints</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="stat-card p-3 text-center">
-      <div class="stat-value">{total_collected}</div>
-      <div class="stat-label">JS Collected</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="stat-card p-3 text-center">
-      <div class="stat-value">{total_js_findings}</div>
-      <div class="stat-label">JS Findings</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="stat-card p-3 text-center">
-      <div class="stat-value">{total_cloud}</div>
-      <div class="stat-label">Cloud Assets</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="stat-card p-3 text-center">
-      <div class="stat-value">{total_emails}</div>
-      <div class="stat-label">Emails</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="stat-card p-3 text-center">
-      <div class="stat-value">{total_ip_fqdns}</div>
-      <div class="stat-label">IP&rarr;FQDN</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="stat-card p-3 text-center">
-      <div class="stat-value">{total_exposures}</div>
-      <div class="stat-label">Exposures</div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="stat-card p-3 text-center">
-      <div class="stat-value">{total_secrets}</div>
-      <div class="stat-label">Secrets &#9888;</div>
-    </div>
-  </div>
-</div>
-
-<!-- CHARTS ROW -->
-<div class="row g-3 mb-4">
-  <div class="col-md-4">
-    <div class="section-card p-3">
-      <div class="section-title">Subdomain Sources</div>
-      <div class="chart-container"><canvas id="chartSources"></canvas></div>
-    </div>
-  </div>
-  <div class="col-md-4">
-    <div class="section-card p-3">
-      <div class="section-title">HTTP Status Codes</div>
-      <div class="chart-container"><canvas id="chartStatus"></canvas></div>
-    </div>
-  </div>
-  <div class="col-md-4">
-    <div class="section-card p-3">
-      <div class="section-title">Tool Execution</div>
-      <div class="chart-container"><canvas id="chartTools"></canvas></div>
-    </div>
-  </div>
-</div>
-
-<!-- TABS -->
-<ul class="nav nav-pills mb-3" id="mainTabs">
-  <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#tab-subs">Subdomains</button></li>
-  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-live">Live Hosts</button></li>
-  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-ip">IP &rarr; FQDN</button></li>
-  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-ep">Endpoints</button></li>
-  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-collected">Collected Assets</button></li>
-  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-jsa">JS Analysis</button></li>
-  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-cloud">Cloud</button></li>
-  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-email">Email Intel</button></li>
-  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-exposure">Exposure OSINT</button></li>
-  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-secrets">Secrets &#9888;</button></li>
-</ul>
-
-<div class="tab-content">
-
-<!-- SUBDOMAINS -->
-<div class="tab-pane fade show active" id="tab-subs">
-  <div class="section-card p-3">
-    <div class="section-title">Discovered Subdomains</div>
-    <table id="tblSubs" class="table table-sm w-100">
-      <thead><tr><th>Subdomain</th><th>Sources</th></tr></thead>
-      <tbody>{rows_subdomains}</tbody>
-    </table>
-  </div>
-</div>
-
-<!-- LIVE HOSTS -->
-<div class="tab-pane fade" id="tab-live">
-  <div class="section-card p-3">
-    <div class="section-title">HTTP Live Hosts</div>
-    <table id="tblLive" class="table table-sm w-100">
-      <thead><tr><th>URL</th><th>Status</th><th>Title</th><th>Tech</th><th>IP</th></tr></thead>
-      <tbody>{rows_live}</tbody>
-    </table>
-  </div>
-</div>
-
-<!-- IP -> FQDN -->
-<div class="tab-pane fade" id="tab-ip">
-  <div class="section-card p-3">
-    <div class="section-title">IP &rarr; FQDN Resolution &amp; Validation</div>
-    <p class="text-muted small">
-      Reverse-DNS (PTR) lookups for the supplied IPs, validated with
-      forward-confirmed reverse DNS (FCrDNS). Resolved:
-      <strong class="text-info">{ip_resolved}/{ip_total}</strong> &nbsp;|&nbsp;
-      FCrDNS-validated FQDNs: <strong class="text-success">{ip_validated}</strong>.
-      Validated names are folded into the Subdomains tab (source <code>ptr</code>).
-    </p>
-    <table id="tblIp" class="table table-sm w-100">
-      <thead><tr><th>IP</th><th>FQDN(s)</th><th>Validated</th><th>Status</th></tr></thead>
-      <tbody>{rows_ip}</tbody>
-    </table>
-  </div>
-</div>
-
-<!-- ENDPOINTS -->
-<div class="tab-pane fade" id="tab-ep">
-  <div class="section-card p-3">
-    <div class="section-title">Discovered Endpoints</div>
-    <ul class="nav nav-tabs mb-3" id="epTabs">
-      <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#ep-all">All ({total_endpoints})</button></li>
-      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#ep-js">JS Files ({total_js})</button></li>
-      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#ep-api">API Paths ({total_api})</button></li>
-    </ul>
-    <div class="tab-content">
-      <div class="tab-pane fade show active" id="ep-all">
-        <table id="tblEp" class="table table-sm w-100">
-          <thead><tr><th>Endpoint</th></tr></thead>
-          <tbody>{rows_endpoints}</tbody>
-        </table>
-      </div>
-      <div class="tab-pane fade" id="ep-js">
-        <table id="tblJs" class="table table-sm w-100">
-          <thead><tr><th>JS File</th></tr></thead>
-          <tbody>{rows_js}</tbody>
-        </table>
-      </div>
-      <div class="tab-pane fade" id="ep-api">
-        <table id="tblApi" class="table table-sm w-100">
-          <thead><tr><th>API Path</th></tr></thead>
-          <tbody>{rows_api}</tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- COLLECTED ASSETS -->
-<div class="tab-pane fade" id="tab-collected">
-  <div class="section-card p-3">
-    <div class="section-title">Collected Assets &mdash; Downloaded for Client-Side Inspection</div>
-    <p class="text-muted small">
-      JavaScript, JSON, and config files downloaded into per-asset directories under
-      <code>collected/</code>. Downloaded: <strong class="text-success">{collected_ok}</strong> &nbsp;|&nbsp;
-      Skipped: <strong class="text-warning">{collected_skip}</strong> &nbsp;|&nbsp;
-      Failed: <strong class="text-danger">{collected_fail}</strong>
-    </p>
-    <table id="tblCollected" class="table table-sm w-100">
-      <thead><tr><th>Asset (Domain)</th><th>JS</th><th>JSON</th><th>Config</th><th>Total</th></tr></thead>
-      <tbody>{rows_collected}</tbody>
-    </table>
-  </div>
-</div>
-
-<!-- JS ANALYSIS -->
-<div class="tab-pane fade" id="tab-jsa">
-  <div class="section-card p-3">
-    <div class="section-title">Client-Side JavaScript Analysis &mdash; semgrep + DOM heuristics</div>
-    <p class="text-muted small">
-      Static analysis of the downloaded JavaScript (Stage 5). semgrep findings:
-      <strong class="text-danger">{jsa_high}</strong> high,
-      <strong class="text-warning">{jsa_medium}</strong> medium,
-      {jsa_total} total &nbsp;|&nbsp; DOM heuristics:
-      <strong>{jsa_sinks}</strong> sinks, <strong>{jsa_postmessage}</strong> postMessage,
-      {jsa_dom} hits. {jsa_semgrep_note}
-      Full detail (per-rule, per-asset, DOM source→sink): {jsa_report_link}
-    </p>
-    <table id="tblJsa" class="table table-sm w-100">
-      <thead><tr><th>Asset</th><th>Findings</th><th>High</th><th>Medium</th>
-                 <th>DOM Hits</th><th>Sinks</th><th>postMessage</th></tr></thead>
-      <tbody>{rows_jsa}</tbody>
-    </table>
-  </div>
-</div>
-
-<!-- CLOUD -->
-<div class="tab-pane fade" id="tab-cloud">
-  <div class="section-card p-3">
-    <div class="section-title">Cloud Infrastructure</div>
-    <div class="row g-3">
-      <div class="col-md-6">
-        <h6 class="text-warning">&#x2601; AWS S3 Buckets ({cnt_s3})</h6>
-        <table id="tblS3" class="table table-sm w-100">
-          <thead><tr><th>Bucket / URL</th></tr></thead>
-          <tbody>{rows_s3}</tbody>
-        </table>
-      </div>
-      <div class="col-md-6">
-        <h6 class="text-info">&#x2601; Azure Blob Storage ({cnt_azure})</h6>
-        <table id="tblAzure" class="table table-sm w-100">
-          <thead><tr><th>Container / URL</th></tr></thead>
-          <tbody>{rows_azure}</tbody>
-        </table>
-      </div>
-      <div class="col-md-6">
-        <h6 class="text-success">&#x2601; GCP Storage ({cnt_gcp})</h6>
-        <table id="tblGcp" class="table table-sm w-100">
-          <thead><tr><th>Bucket / URL</th></tr></thead>
-          <tbody>{rows_gcp}</tbody>
-        </table>
-      </div>
-      <div class="col-md-6">
-        <h6 class="text-danger">&#x26A1; Serverless Functions ({cnt_func})</h6>
-        <table id="tblFunc" class="table table-sm w-100">
-          <thead><tr><th>Endpoint</th></tr></thead>
-          <tbody>{rows_func}</tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- EMAIL -->
-<div class="tab-pane fade" id="tab-email">
-  <div class="section-card p-3">
-    <div class="section-title">Email & Username Intelligence</div>
-    <div class="row g-3">
-      <div class="col-md-6">
-        <h6 class="text-success">Email Addresses ({total_emails})</h6>
-        <table id="tblEmails" class="table table-sm w-100">
-          <thead><tr><th>Email</th><th>Source</th></tr></thead>
-          <tbody>{rows_emails}</tbody>
-        </table>
-      </div>
-      <div class="col-md-6">
-        <h6 class="text-info">LinkedIn Usernames ({total_usernames})</h6>
-        <table id="tblUsers" class="table table-sm w-100">
-          <thead><tr><th>Username</th></tr></thead>
-          <tbody>{rows_usernames}</tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- EXPOSURE OSINT -->
-<div class="tab-pane fade" id="tab-exposure">
-  <div class="section-card p-3">
-    <div class="section-title">Exposure &amp; Secrets Discovery &mdash; External OSINT</div>
-    <p class="text-muted small">
-      LeakIX leak intelligence, GitHub secret mining (Gitminer3), and Google
-      dorking (Tavily API). Full dork lists are saved to
-      <code>dorks.txt</code> and <code>google_dorks.txt</code> in the run directory.
-    </p>
-    <ul class="nav nav-tabs mb-3" id="expTabs">
-      <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#exp-leakix">LeakIX ({cnt_leakix})</button></li>
-      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#exp-github">GitHub Secrets ({cnt_github})</button></li>
-      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#exp-google">Google Dorks ({cnt_google}/{cnt_google_total})</button></li>
-    </ul>
-    <div class="tab-content">
-      <div class="tab-pane fade show active" id="exp-leakix">
-        <p class="text-muted small">Source: leakix.net &mdash; method: <code>{leakix_method}</code></p>
-        <table id="tblLeakix" class="table table-sm w-100">
-          <thead><tr><th>Host</th><th>IP</th><th>Event</th><th>Summary</th><th>Date</th></tr></thead>
-          <tbody>{rows_leakix}</tbody>
-        </table>
-      </div>
-      <div class="tab-pane fade" id="exp-github">
-        <p class="text-muted small">Gitminer3 results scoped to the target domain. Verify each hit manually.</p>
-        <table id="tblGithub" class="table table-sm w-100">
-          <thead><tr><th>Repository / File</th><th>URL</th><th>Match</th></tr></thead>
-          <tbody>{rows_github}</tbody>
-        </table>
-      </div>
-      <div class="tab-pane fade" id="exp-google">
-        <p class="text-muted small">
-          Queries that returned results are listed first. <code>captcha</code> notes
-          indicate Google blocked the automated lookup &mdash; re-run those by hand.
-        </p>
-        <table id="tblGoogle" class="table table-sm w-100">
-          <thead><tr><th>Dork</th><th>Hit</th><th>Top Results</th><th>Note</th></tr></thead>
-          <tbody>{rows_google}</tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- SECRETS -->
-<div class="tab-pane fade" id="tab-secrets">
-  <div class="section-card p-3">
-    <div class="section-title">&#9888; Potential Secrets & Sensitive Patterns</div>
-    <p class="text-muted small">Regex-matched patterns from crawled JS/pages. Verify manually.</p>
-    <table id="tblSecrets" class="table table-sm w-100">
-      <thead><tr><th>File</th><th>Pattern Match</th></tr></thead>
-      <tbody>{rows_secrets}</tbody>
-    </table>
-  </div>
-</div>
-
-</div><!-- end tab-content -->
-</div><!-- end container -->
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.datatables.net/2.0.7/js/dataTables.min.js"></script>
-<script src="https://cdn.datatables.net/2.0.7/js/dataTables.bootstrap5.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-<script>
-$(function() {{
-  const dtOpts = {{ pageLength: 25, lengthMenu: [25, 50, 100, 500] }};
-  ['#tblSubs','#tblLive','#tblIp','#tblEp','#tblJs','#tblApi','#tblCollected','#tblJsa',
-   '#tblS3','#tblAzure','#tblGcp','#tblFunc',
-   '#tblEmails','#tblUsers','#tblLeakix','#tblGithub','#tblGoogle','#tblSecrets'].forEach(id => {{
-    if ($(id).length) $(id).DataTable(dtOpts);
-  }});
-
-  // Chart: Subdomain Sources
-  const srcData = {chart_sources_json};
-  new Chart(document.getElementById('chartSources'), {{
-    type: 'doughnut',
-    data: {{
-      labels: srcData.labels,
-      datasets: [{{ data: srcData.values,
-        backgroundColor: ['#00ff88','#0dcaf0','#6f42c1','#fd7e14'],
-        borderWidth: 0 }}]
-    }},
-    options: {{ plugins: {{ legend: {{ labels: {{ color: '#cdd9e5' }} }} }}, cutout: '65%' }}
-  }});
-
-  // Chart: HTTP Status Codes
-  const stData = {chart_status_json};
-  new Chart(document.getElementById('chartStatus'), {{
-    type: 'bar',
-    data: {{
-      labels: stData.labels,
-      datasets: [{{ data: stData.values, backgroundColor: stData.colors, borderWidth: 0 }}]
-    }},
-    options: {{
-      plugins: {{ legend: {{ display: false }} }},
-      scales: {{
-        x: {{ ticks: {{ color: '#8899aa' }}, grid: {{ color: '#1e2940' }} }},
-        y: {{ ticks: {{ color: '#8899aa' }}, grid: {{ color: '#1e2940' }} }}
-      }}
-    }}
-  }});
-
-  // Chart: Tool Durations
-  const toolData = {chart_tools_json};
-  new Chart(document.getElementById('chartTools'), {{
-    type: 'horizontalBar',
-    data: {{
-      labels: toolData.labels,
-      datasets: [{{
-        data: toolData.values,
-        backgroundColor: toolData.colors,
-        borderWidth: 0
-      }}]
-    }},
-    options: {{
-      indexAxis: 'y',
-      plugins: {{ legend: {{ display: false }} }},
-      scales: {{
-        x: {{ ticks: {{ color: '#8899aa' }}, grid: {{ color: '#1e2940' }},
-              title: {{ display: true, text: 'seconds', color: '#556' }} }},
-        y: {{ ticks: {{ color: '#8899aa' }}, grid: {{ color: '#1e2940' }} }}
-      }}
-    }}
-  }});
-}});
-</script>
-</body>
-</html>
-"""
-
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Small helpers
 # ──────────────────────────────────────────────────────────────────────────────
-
-def _esc(s: str) -> str:
-    return (s.replace("&", "&amp;").replace("<", "&lt;")
-             .replace(">", "&gt;").replace('"', "&quot;"))
-
 
 def _status_class(code: int) -> str:
     if code < 300:   return "status-200"
@@ -517,44 +52,457 @@ def _status_color(code: int) -> str:
     return "#6f42c1"
 
 
-def _rows(items: list[str], extra_cols: list[str] | None = None) -> str:
-    rows = []
-    for item in items:
-        cells = f"<td>{_esc(item)}</td>"
-        if extra_cols:
-            cells += "".join(f"<td>{c}</td>" for c in extra_cols)
-        rows.append(f"<tr>{cells}</tr>")
-    return "\n".join(rows)
+def _rows(items: list[str]) -> str:
+    return "\n".join(f"<tr><td>{esc(item)}</td></tr>" for item in items)
 
 
-def _build_chart_sources(by_tool: dict[str, list]) -> str:
-    labels = list(by_tool.keys())
-    values = [len(v) for v in by_tool.values()]
-    return json.dumps({"labels": labels, "values": values})
+def _card(value, label, cls="") -> str:
+    return (f'<div class="col-6 col-md-2">'
+            f'<div class="stat-card p-3 text-center">'
+            f'<div class="stat-value {cls}">{value}</div>'
+            f'<div class="stat-label">{label}</div></div></div>')
 
 
-def _build_chart_status(hosts: list[dict]) -> str:
+def _section(title: str, table_html: str, note: str = "") -> str:
+    note_html = f'<p class="text-muted small">{note}</p>' if note else ""
+    return (f'<div class="section-card p-3">'
+            f'<div class="section-title">{title}</div>{note_html}{table_html}</div>')
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Chart data builders (index only)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _chart_sources(by_tool: dict[str, list]) -> str:
+    return json.dumps({"labels": list(by_tool.keys()),
+                       "values": [len(v) for v in by_tool.values()]})
+
+
+def _chart_status(hosts: list[dict]) -> str:
     counts: dict[int, int] = {}
     for h in hosts:
         code = h.get("status_code", 0)
         counts[code] = counts.get(code, 0) + 1
     labels = [str(k) for k in sorted(counts)]
-    values = [counts[int(k)] for k in labels]
-    colors = [_status_color(int(k)) for k in labels]
-    return json.dumps({"labels": labels, "values": values, "colors": colors})
+    return json.dumps({"labels": labels,
+                       "values": [counts[int(k)] for k in labels],
+                       "colors": [_status_color(int(k)) for k in labels]})
 
 
-def _build_chart_tools(all_tool_results: list[dict]) -> str:
+def _chart_nuclei(counts: dict) -> str:
+    labels = ["Critical", "High", "Medium", "Low", "Info"]
+    keys   = ["critical", "high", "medium", "low", "info"]
+    return json.dumps({"labels": labels,
+                       "values": [counts.get(k, 0) for k in keys],
+                       "colors": ["#ff2d55", "#ff4d4d", "#ffc107", "#0dcaf0", "#00ff88"]})
+
+
+def _chart_tools(all_tool_results: list[dict]) -> str:
     seen: dict[str, float] = {}
+    skipped: dict[str, bool] = {}
     for r in all_tool_results:
         name = r["tool"]
         if name not in seen:
             seen[name] = round(r.get("duration", 0), 1)
+            skipped[name] = r.get("skipped", False)
     labels = list(seen.keys())
-    values = list(seen.values())
-    colors = ["#00ff88" if not all_tool_results[i].get("skipped") else "#ff6600"
-              for i, name in enumerate(labels)]
-    return json.dumps({"labels": labels, "values": values, "colors": colors})
+    return json.dumps({"labels": labels,
+                       "values": [seen[n] for n in labels],
+                       "colors": ["#ff6600" if skipped[n] else "#00ff88" for n in labels]})
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Individual stage pages
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _page_subdomains(domain: str, sub_data: dict) -> str:
+    subs_by_tool: dict[str, list] = sub_data.get("by_tool", {})
+    all_subs = sub_data.get("all", [])
+    source_map: dict[str, list[str]] = {}
+    for tool, subs in subs_by_tool.items():
+        for s in subs:
+            source_map.setdefault(s, []).append(tool)
+    for s in all_subs:
+        source_map.setdefault(s, ["?"])
+
+    rows = "\n".join(
+        f'<tr><td>{esc(s)}</td><td>'
+        + " ".join(f'<span class="badge badge-source bg-secondary">{esc(t)}</span>'
+                   for t in source_map.get(s, []))
+        + "</td></tr>"
+        for s in sorted(source_map)
+    )
+    table = ('<table class="table table-sm w-100 dt">'
+             '<thead><tr><th>Subdomain</th><th>Sources</th></tr></thead>'
+             f'<tbody>{rows}</tbody></table>')
+    body = _section(f"Discovered Subdomains ({len(source_map)})", table)
+    return page(domain, "01-subdomains.html", "Subdomains", body)
+
+
+def _page_live_hosts(domain: str, val_data: dict) -> str:
+    hosts = val_data.get("live_hosts", [])
+    parts = []
+    for h in hosts:
+        url   = esc(h.get("url", ""))
+        code  = h.get("status_code", 0)
+        title = esc(h.get("title", ""))
+        tech  = esc(", ".join(h.get("tech", []) or []))
+        ip    = esc(h.get("host", ""))
+        parts.append(
+            f'<tr><td><a href="{url}" target="_blank">{url}</a></td>'
+            f'<td class="{_status_class(code)}">{code}</td><td>{title}</td>'
+            f'<td>{tech}</td><td>{ip}</td></tr>'
+        )
+    table = ('<table class="table table-sm w-100 dt">'
+             '<thead><tr><th>URL</th><th>Status</th><th>Title</th><th>Tech</th><th>IP</th></tr></thead>'
+             f'<tbody>{"".join(parts)}</tbody></table>')
+    body = _section(f"HTTP Live Hosts ({len(hosts)})", table)
+    return page(domain, "02-live-hosts.html", "Live Hosts", body)
+
+
+def _page_endpoints(domain: str, js_data: dict) -> str:
+    endpoints    = js_data.get("endpoints", [])
+    js_files     = set(js_data.get("js_files", []))
+    api_paths    = js_data.get("api_paths", [])
+    waymore_urls = js_data.get("waymore_urls", [])
+    waymore_js   = set(js_data.get("waymore_js", []))
+
+    ep_table = ('<table class="table table-sm w-100 dt">'
+                '<thead><tr><th>Endpoint</th><th>JS?</th></tr></thead><tbody>'
+                + "\n".join(
+                    f'<tr><td>{esc(u)}</td><td>'
+                    + ('<span class="js-flag">JS</span>' if u in js_files else '')
+                    + '</td></tr>'
+                    for u in endpoints)
+                + '</tbody></table>')
+    js_table = ('<table class="table table-sm w-100 dt">'
+                '<thead><tr><th>JS File</th></tr></thead>'
+                f'<tbody>{_rows(sorted(js_files))}</tbody></table>')
+    api_table = ('<table class="table table-sm w-100 dt">'
+                 '<thead><tr><th>API Path</th></tr></thead>'
+                 f'<tbody>{_rows(api_paths)}</tbody></table>')
+    # waymore catalog — historical URLs, JS flagged
+    wm_table = ('<table class="table table-sm w-100 dt">'
+                '<thead><tr><th>Archived URL (waymore)</th><th>JS?</th></tr></thead><tbody>'
+                + "\n".join(
+                    f'<tr><td>{esc(u)}</td><td>'
+                    + ('<span class="js-flag">JS</span>' if u in waymore_js else '')
+                    + '</td></tr>'
+                    for u in waymore_urls)
+                + '</tbody></table>')
+
+    body = f"""
+<ul class="nav nav-pills mb-3 flex-wrap">
+  <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#ep-all">All Endpoints ({len(endpoints)})</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#ep-js">JS Files ({len(js_files)})</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#ep-api">API Paths ({len(api_paths)})</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#ep-wm">waymore Archive ({len(waymore_urls)}, JS={len(waymore_js)})</button></li>
+</ul>
+<div class="tab-content">
+  <div class="tab-pane fade show active" id="ep-all">{_section("Discovered Endpoints", ep_table, "JS files are flagged and downloaded in Stage 5 for analysis in Stage 6.")}</div>
+  <div class="tab-pane fade" id="ep-js">{_section("JavaScript Files", js_table)}</div>
+  <div class="tab-pane fade" id="ep-api">{_section("API Paths", api_table)}</div>
+  <div class="tab-pane fade" id="ep-wm">{_section("waymore — Archived / Historical URLs", wm_table, "Pulled from Wayback and other archives. JS-flagged entries are collected and analysed downstream.")}</div>
+</div>
+"""
+    return page(domain, "04-endpoints.html", "Endpoints", body)
+
+
+def _page_assets(domain: str, collect_data: dict) -> str:
+    counts   = collect_data.get("counts", {})
+    by_asset = collect_data.get("by_asset", {})
+    rows = "\n".join(
+        f'<tr><td>{esc(asset)}</td><td>{a.get("js", 0)}</td>'
+        f'<td>{a.get("json", 0)}</td><td>{a.get("config", 0)}</td>'
+        f'<td>{a.get("total", 0)}</td></tr>'
+        for asset, a in sorted(by_asset.items())
+    )
+    note = (f'Downloaded: <strong class="text-success">{counts.get("downloaded", 0)}</strong> &nbsp;|&nbsp; '
+            f'Skipped: <strong class="text-warning">{counts.get("skipped", 0)}</strong> &nbsp;|&nbsp; '
+            f'Failed: <strong class="text-danger">{counts.get("failed", 0)}</strong>')
+    table = ('<table class="table table-sm w-100 dt">'
+             '<thead><tr><th>Asset (Domain)</th><th>JS</th><th>JSON</th><th>Config</th><th>Total</th></tr></thead>'
+             f'<tbody>{rows}</tbody></table>')
+    body = _section("Collected Assets — Downloaded for Client-Side Inspection", table, note)
+    return page(domain, "05-assets.html", "Assets", body)
+
+
+def _page_cloud(domain: str, cloud_data: dict) -> str:
+    assets = cloud_data.get("assets", {})
+
+    def tbl(header, items):
+        return (f'<h6 class="text-info">{header} ({len(items)})</h6>'
+                '<table class="table table-sm w-100 dt">'
+                f'<thead><tr><th>{esc(header)}</th></tr></thead>'
+                f'<tbody>{_rows(items)}</tbody></table>')
+
+    grid = (
+        '<div class="row g-3">'
+        f'<div class="col-md-6">{tbl("AWS S3 Buckets", assets.get("s3", []))}</div>'
+        f'<div class="col-md-6">{tbl("Azure Blob Storage", assets.get("azure", []))}</div>'
+        f'<div class="col-md-6">{tbl("GCP Storage", assets.get("gcp", []))}</div>'
+        f'<div class="col-md-6">{tbl("Serverless Functions", assets.get("functions", []))}</div>'
+        '</div>'
+    )
+    body = _section(f"Cloud Infrastructure ({cloud_data.get('total', 0)})", grid)
+    return page(domain, "07-cloud.html", "Cloud", body)
+
+
+def _page_email(domain: str, email_data: dict) -> str:
+    emails    = email_data.get("emails", [])
+    usernames = email_data.get("usernames", [])
+    pb_count  = email_data.get("phonebooks_count", 0)
+
+    email_rows = []
+    for e in emails:
+        source = "phonebooks.cz" if "@" in e and emails.index(e) < pb_count else "linkedin"
+        email_rows.append(
+            f'<tr><td>{esc(e)}</td><td><span class="badge bg-secondary">{source}</span></td></tr>')
+    email_tbl = ('<table class="table table-sm w-100 dt">'
+                 '<thead><tr><th>Email</th><th>Source</th></tr></thead>'
+                 f'<tbody>{"".join(email_rows)}</tbody></table>')
+    user_tbl = ('<table class="table table-sm w-100 dt">'
+                '<thead><tr><th>Username</th></tr></thead>'
+                f'<tbody>{_rows(usernames)}</tbody></table>')
+    grid = (
+        '<div class="row g-3">'
+        f'<div class="col-md-6"><h6 class="text-success">Email Addresses ({len(emails)})</h6>{email_tbl}</div>'
+        f'<div class="col-md-6"><h6 class="text-info">LinkedIn Usernames ({len(usernames)})</h6>{user_tbl}</div>'
+        '</div>'
+    )
+    body = _section("Email &amp; Username Intelligence", grid)
+    return page(domain, "08-email.html", "Email", body)
+
+
+def _pick(d: dict, *keys: str) -> str:
+    for k in keys:
+        for actual in d:
+            if actual.lower() == k:
+                return str(d[actual])
+    return ""
+
+
+def _page_exposure(domain: str, exposure_data: dict) -> str:
+    leakix   = exposure_data.get("leakix", {}) or {}
+    gitminer = exposure_data.get("gitminer", {}) or {}
+    gdorks   = exposure_data.get("google_dorks", {}) or {}
+
+    leakix_rows = "\n".join(
+        f'<tr><td>{esc(r.get("host",""))}</td><td>{esc(r.get("ip",""))}</td>'
+        f'<td>{esc(r.get("event",""))}</td><td>{esc(r.get("summary",""))}</td>'
+        f'<td class="ts">{esc(r.get("date",""))}</td></tr>'
+        for r in leakix.get("results", []) if isinstance(r, dict)
+    )
+    leakix_tbl = ('<table class="table table-sm w-100 dt">'
+                  '<thead><tr><th>Host</th><th>IP</th><th>Event</th><th>Summary</th><th>Date</th></tr></thead>'
+                  f'<tbody>{leakix_rows}</tbody></table>')
+
+    github_rows = []
+    for f in gitminer.get("findings", []):
+        if not isinstance(f, dict):
+            continue
+        repo  = _pick(f, "repository", "repo", "file", "filename", "name", "path")
+        url   = _pick(f, "url", "html_url", "link")
+        match = _pick(f, "match", "dork", "query", "matched", "snippet")
+        url_cell = f'<a href="{esc(url)}" target="_blank">{esc(url)}</a>' if url else ""
+        github_rows.append(f'<tr><td>{esc(repo)}</td><td>{url_cell}</td>'
+                           f'<td class="text-muted small">{esc(match)}</td></tr>')
+    github_tbl = ('<table class="table table-sm w-100 dt">'
+                  '<thead><tr><th>Repository / File</th><th>URL</th><th>Match</th></tr></thead>'
+                  f'<tbody>{"".join(github_rows)}</tbody></table>')
+
+    google_findings = sorted(gdorks.get("findings", []),
+                             key=lambda f: (not f.get("results_found", False)))
+    google_rows = []
+    for f in google_findings:
+        if not isinstance(f, dict):
+            continue
+        hit = ('<span class="text-success">yes</span>'
+               if f.get("results_found") else '<span class="text-muted">no</span>')
+        results = f.get("results") or []
+        if results:
+            tops = "<br>".join(
+                f'<a href="{esc(r.get("url",""))}" target="_blank">'
+                f'{esc((r.get("title") or r.get("url","") or "")[:90])}</a>'
+                for r in results[:3] if isinstance(r, dict))
+        else:
+            tops = "<br>".join(
+                f'<a href="{esc(u)}" target="_blank">{esc(str(u)[:90])}</a>'
+                for u in (f.get("top_results", []) or [])[:3])
+        google_rows.append(
+            f'<tr><td class="small">{esc(f.get("dork",""))}</td><td>{hit}</td>'
+            f'<td class="small">{tops}</td>'
+            f'<td class="text-muted small">{esc(f.get("note",""))}</td></tr>')
+    google_tbl = ('<table class="table table-sm w-100 dt">'
+                  '<thead><tr><th>Dork</th><th>Hit</th><th>Top Results</th><th>Note</th></tr></thead>'
+                  f'<tbody>{"".join(google_rows)}</tbody></table>')
+
+    body = f"""
+<ul class="nav nav-pills mb-3 flex-wrap">
+  <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#exp-leakix">LeakIX ({leakix.get("count", 0)})</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#exp-github">GitHub Secrets ({gitminer.get("count", 0)})</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#exp-google">Google Dorks ({gdorks.get("count", 0)}/{gdorks.get("dorks_total", 0)})</button></li>
+</ul>
+<div class="tab-content">
+  <div class="tab-pane fade show active" id="exp-leakix">{_section("LeakIX", leakix_tbl, "Source: leakix.net — method: <code>" + esc(leakix.get("method", "n/a")) + "</code>")}</div>
+  <div class="tab-pane fade" id="exp-github">{_section("GitHub Secrets (Gitminer3)", github_tbl, "Scoped to the target domain. Verify each hit manually.")}</div>
+  <div class="tab-pane fade" id="exp-google">{_section("Google Dorks (Tavily)", google_tbl, "Queries returning results are listed first.")}</div>
+</div>
+"""
+    return page(domain, "09-exposure.html", "Exposure", body)
+
+
+def _page_ip(domain: str, ip_data: dict) -> str:
+    rows = []
+    for r in ip_data.get("results", []):
+        if not isinstance(r, dict):
+            continue
+        fqdns = ", ".join(r.get("fqdns", []) or [])
+        valid = ('<span class="text-success">yes</span>'
+                 if r.get("validated") else '<span class="text-muted">no</span>')
+        rows.append(f'<tr><td>{esc(r.get("ip",""))}</td><td>{esc(fqdns)}</td>'
+                    f'<td>{valid}</td><td class="small">{esc(r.get("status",""))}</td></tr>')
+    note = (f'Resolved: <strong class="text-info">{ip_data.get("resolved", 0)}/'
+            f'{ip_data.get("total_ips", 0)}</strong> &nbsp;|&nbsp; '
+            f'FCrDNS-validated FQDNs: <strong class="text-success">'
+            f'{len(ip_data.get("validated_fqdns", []))}</strong>. '
+            'Validated names are folded into the Subdomains report.')
+    table = ('<table class="table table-sm w-100 dt">'
+             '<thead><tr><th>IP</th><th>FQDN(s)</th><th>Validated</th><th>Status</th></tr></thead>'
+             f'<tbody>{"".join(rows)}</tbody></table>')
+    body = _section("IP → FQDN Resolution &amp; Validation (FCrDNS)", table, note)
+    return page(domain, "ip-fqdn.html", "IP→FQDN", body)
+
+
+def _page_secrets(domain: str, js_data: dict) -> str:
+    secrets = js_data.get("potential_secrets", [])
+    rows = "\n".join(
+        f'<tr><td class="text-muted small">{esc(s["file"])}</td>'
+        f'<td><div class="secret-snippet">{esc(s["snippet"][:150])}</div></td></tr>'
+        for s in secrets
+    )
+    table = ('<table class="table table-sm w-100 dt">'
+             '<thead><tr><th>File</th><th>Pattern Match</th></tr></thead>'
+             f'<tbody>{rows}</tbody></table>')
+    body = _section("&#9888; Potential Secrets &amp; Sensitive Patterns", table,
+                    "Regex-matched patterns from crawled JS/pages. Verify manually.")
+    return page(domain, "secrets.html", "Secrets", body)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Index dashboard
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _page_index(domain: str, sub_data, val_data, js_data, collect_data,
+                cloud_data, email_data, exposure_data, ip_data, jsa_data,
+                recon_data, all_tool_results) -> str:
+    subs_by_tool = sub_data.get("by_tool", {})
+    hosts = val_data.get("live_hosts", [])
+    jsa_counts = jsa_data.get("counts", {})
+    rcounts = recon_data.get("counts", {})
+
+    cards = "".join([
+        _card(len(sub_data.get("all", [])), "Subdomains"),
+        _card(len(hosts), "Live Hosts"),
+        _card(recon_data.get("screenshots", 0), "Screenshots"),
+        _card(rcounts.get("total", 0), "Nuclei", "sev-high" if rcounts.get("high") or rcounts.get("critical") else ""),
+        _card(len(js_data.get("endpoints", [])), "Endpoints"),
+        _card(collect_data.get("counts", {}).get("downloaded", 0), "JS Collected"),
+        _card(jsa_counts.get("findings", 0) + jsa_counts.get("dom", 0), "JS Findings"),
+        _card(cloud_data.get("total", 0), "Cloud Assets"),
+        _card(len(email_data.get("emails", [])), "Emails"),
+        _card(len(ip_data.get("validated_fqdns", [])), "IP&rarr;FQDN"),
+        _card(exposure_data.get("total", 0), "Exposures"),
+        _card(len(js_data.get("potential_secrets", [])), "Secrets &#9888;"),
+    ])
+
+    # Server link (if gowitness report server was launched)
+    server = recon_data.get("server", {}) or {}
+    server_note = ""
+    if server.get("started"):
+        u = esc(server.get("url", ""))
+        server_note = (f'<div class="alert alert-dark border small mb-4">'
+                       f'gowitness screenshot server: '
+                       f'<a href="{u}" target="_blank">{u}</a></div>')
+
+    # Quick links to every report page
+    link_cards = "".join(
+        f'<div class="col-6 col-md-3"><a class="d-block stat-card p-3 text-center" '
+        f'href="{fn}" style="text-decoration:none;color:var(--accent2);">{esc(label)}</a></div>'
+        for fn, label in NAV if fn != "index.html"
+    )
+
+    # Tool execution table
+    seen = {}
+    for r in all_tool_results:
+        if r["tool"] not in seen:
+            seen[r["tool"]] = r
+    tool_rows = "\n".join(
+        f'<tr><td>{esc(r["tool"])}</td>'
+        f'<td>{"skipped" if r.get("skipped") else "ok"}</td>'
+        f'<td>{round(r.get("duration", 0), 1)}s</td>'
+        f'<td class="small text-muted">{esc(r.get("skip_reason", ""))}</td></tr>'
+        for r in seen.values()
+    )
+    tool_tbl = ('<table class="table table-sm w-100 dt">'
+                '<thead><tr><th>Tool</th><th>Status</th><th>Duration</th><th>Note</th></tr></thead>'
+                f'<tbody>{tool_rows}</tbody></table>')
+
+    body = f"""
+<div class="row g-3 mb-4">{cards}</div>
+{server_note}
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="section-card p-3"><div class="section-title">Subdomain Sources</div>
+    <div class="chart-container"><canvas id="chartSources"></canvas></div></div></div>
+  <div class="col-md-3"><div class="section-card p-3"><div class="section-title">HTTP Status Codes</div>
+    <div class="chart-container"><canvas id="chartStatus"></canvas></div></div></div>
+  <div class="col-md-3"><div class="section-card p-3"><div class="section-title">Nuclei Severity</div>
+    <div class="chart-container"><canvas id="chartNuclei"></canvas></div></div></div>
+  <div class="col-md-3"><div class="section-card p-3"><div class="section-title">Tool Execution (s)</div>
+    <div class="chart-container"><canvas id="chartTools"></canvas></div></div></div>
+</div>
+
+<div class="section-card p-3 mb-4">
+  <div class="section-title">Reports</div>
+  <div class="row g-2">{link_cards}</div>
+</div>
+
+{_section("Tool Execution Summary", tool_tbl)}
+"""
+
+    extra_script = f"""
+  const srcData = {_chart_sources(subs_by_tool)};
+  new Chart(document.getElementById('chartSources'), {{
+    type: 'doughnut',
+    data: {{ labels: srcData.labels, datasets: [{{ data: srcData.values,
+      backgroundColor: ['#00ff88','#0dcaf0','#6f42c1','#fd7e14'], borderWidth: 0 }}] }},
+    options: {{ plugins: {{ legend: {{ labels: {{ color: '#cdd9e5' }} }} }}, cutout: '65%' }}
+  }});
+  const stData = {_chart_status(hosts)};
+  new Chart(document.getElementById('chartStatus'), {{
+    type: 'bar',
+    data: {{ labels: stData.labels, datasets: [{{ data: stData.values, backgroundColor: stData.colors, borderWidth: 0 }}] }},
+    options: {{ plugins: {{ legend: {{ display: false }} }},
+      scales: {{ x: {{ ticks: {{ color: '#8899aa' }}, grid: {{ color: '#1e2940' }} }},
+                 y: {{ ticks: {{ color: '#8899aa' }}, grid: {{ color: '#1e2940' }} }} }} }}
+  }});
+  const nucData = {_chart_nuclei(rcounts)};
+  new Chart(document.getElementById('chartNuclei'), {{
+    type: 'doughnut',
+    data: {{ labels: nucData.labels, datasets: [{{ data: nucData.values, backgroundColor: nucData.colors, borderWidth: 0 }}] }},
+    options: {{ plugins: {{ legend: {{ labels: {{ color: '#cdd9e5' }} }} }}, cutout: '60%' }}
+  }});
+  const toolData = {_chart_tools(all_tool_results)};
+  new Chart(document.getElementById('chartTools'), {{
+    type: 'bar',
+    data: {{ labels: toolData.labels, datasets: [{{ data: toolData.values, backgroundColor: toolData.colors, borderWidth: 0 }}] }},
+    options: {{ indexAxis: 'y', plugins: {{ legend: {{ display: false }} }},
+      scales: {{ x: {{ ticks: {{ color: '#8899aa' }}, grid: {{ color: '#1e2940' }} }},
+                 y: {{ ticks: {{ color: '#8899aa' }}, grid: {{ color: '#1e2940' }} }} }} }}
+  }});
+"""
+    return page(domain, "index.html", "Overview", body,
+                with_charts=True, extra_script=extra_script)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -563,7 +511,7 @@ def _build_chart_tools(all_tool_results: list[dict]) -> str:
 
 def generate_report(
     domain: str,
-    outdir: Path,
+    reports_dir: Path,
     sub_data:      dict,
     val_data:      dict,
     js_data:       dict,
@@ -573,275 +521,64 @@ def generate_report(
     exposure_data: dict | None = None,
     ip_data:       dict | None = None,
     jsa_data:      dict | None = None,
+    recon_data:    dict | None = None,
 ) -> Path:
-    log.info("=== Stage 9: Generating HTML Report ===")
+    log.info("=== Stage 10: Generating HTML Reports (split per stage) ===")
     exposure_data = exposure_data or {}
-    ip_data = ip_data or {}
-    jsa_data = jsa_data or {}
+    ip_data       = ip_data or {}
+    jsa_data      = jsa_data or {}
+    recon_data    = recon_data or {"counts": {}, "screenshots": 0, "server": {}}
 
-    # ── Subdomains ──
-    subs_by_tool: dict[str, list] = sub_data.get("by_tool", {})
-    all_subs = sub_data.get("all", [])
-    sub_source_map: dict[str, list[str]] = {}
-    for tool, subs in subs_by_tool.items():
-        for s in subs:
-            sub_source_map.setdefault(s, []).append(tool)
-    for s in all_subs:
-        sub_source_map.setdefault(s, ["?"])
+    reports_dir = Path(reports_dir)
+    reports_dir.mkdir(parents=True, exist_ok=True)
 
-    rows_subdomains = "\n".join(
-        f'<tr><td>{_esc(s)}</td><td>'
-        + " ".join(f'<span class="badge badge-source bg-secondary">{_esc(t)}</span>'
-                   for t in sub_source_map.get(s, []))
-        + "</td></tr>"
-        for s in sorted(sub_source_map)
-    )
-
-    # ── Live Hosts ──
-    hosts = val_data.get("live_hosts", [])
-    rows_live_parts = []
-    for h in hosts:
-        url     = _esc(h.get("url", ""))
-        code    = h.get("status_code", 0)
-        title   = _esc(h.get("title", ""))
-        tech    = ", ".join(h.get("tech", []) or [])
-        ip      = _esc(h.get("host", ""))
-        sc      = _status_class(code)
-        rows_live_parts.append(
-            f'<tr><td><a href="{url}" target="_blank">{url}</a></td>'
-            f'<td class="{sc}">{code}</td><td>{title}</td>'
-            f'<td>{_esc(tech)}</td><td>{ip}</td></tr>'
-        )
-    rows_live = "\n".join(rows_live_parts)
-
-    # ── Endpoints ──
-    endpoints = js_data.get("endpoints", [])
-    js_files  = js_data.get("js_files", [])
-    api_paths = js_data.get("api_paths", [])
-    rows_endpoints = _rows(endpoints)
-    rows_js        = _rows(js_files)
-    rows_api       = _rows(api_paths)
-
-    # ── Collected Assets ──
-    collect_counts  = collect_data.get("counts", {})
-    by_asset        = collect_data.get("by_asset", {})
-    rows_collected = "\n".join(
-        f'<tr><td>{_esc(asset)}</td>'
-        f'<td>{a.get("js", 0)}</td><td>{a.get("json", 0)}</td>'
-        f'<td>{a.get("config", 0)}</td><td>{a.get("total", 0)}</td></tr>'
-        for asset, a in sorted(by_asset.items())
-    )
-
-    # ── Cloud ──
-    assets   = cloud_data.get("assets", {})
-    rows_s3    = _rows(assets.get("s3", []))
-    rows_azure = _rows(assets.get("azure", []))
-    rows_gcp   = _rows(assets.get("gcp", []))
-    rows_func  = _rows(assets.get("functions", []))
-
-    # ── Email ──
-    all_emails = email_data.get("emails", [])
-    usernames  = email_data.get("usernames", [])
-    pb_count   = email_data.get("phonebooks_count", 0)
-    li_count   = email_data.get("linkedin_count", 0)
-
-    rows_emails_parts = []
-    for e in all_emails:
-        source = "phonebooks.cz" if "@" in e and all_emails.index(e) < pb_count else "linkedin"
-        rows_emails_parts.append(
-            f'<tr><td>{_esc(e)}</td><td><span class="badge bg-secondary">{source}</span></td></tr>'
-        )
-    rows_emails    = "\n".join(rows_emails_parts)
-    rows_usernames = _rows(usernames)
-
-    # ── Secrets ──
-    secrets = js_data.get("potential_secrets", [])
-    rows_secrets = "\n".join(
-        f'<tr><td class="text-muted small">{_esc(s["file"])}</td>'
-        f'<td><div class="secret-snippet">{_esc(s["snippet"][:150])}</div></td></tr>'
-        for s in secrets
-    )
-
-    # ── Exposure OSINT ──
-    leakix   = exposure_data.get("leakix", {}) or {}
-    gitminer = exposure_data.get("gitminer", {}) or {}
-    gdorks   = exposure_data.get("google_dorks", {}) or {}
-
-    leakix_results = leakix.get("results", [])
-    rows_leakix = "\n".join(
-        f'<tr><td>{_esc(str(r.get("host","")))}</td>'
-        f'<td>{_esc(str(r.get("ip","")))}</td>'
-        f'<td>{_esc(str(r.get("event","")))}</td>'
-        f'<td>{_esc(str(r.get("summary","")))}</td>'
-        f'<td class="ts">{_esc(str(r.get("date","")))}</td></tr>'
-        for r in leakix_results
-    )
-
-    def _pick(d: dict, *keys: str) -> str:
-        for k in keys:
-            for actual in d:
-                if actual.lower() == k:
-                    return str(d[actual])
-        return ""
-
-    github_findings = gitminer.get("findings", [])
-    rows_github_parts = []
-    for f in github_findings:
-        if not isinstance(f, dict):
-            continue
-        repo  = _pick(f, "repository", "repo", "file", "filename", "name", "path")
-        url   = _pick(f, "url", "html_url", "link")
-        match = _pick(f, "match", "dork", "query", "matched", "snippet")
-        url_cell = f'<a href="{_esc(url)}" target="_blank">{_esc(url)}</a>' if url else ""
-        rows_github_parts.append(
-            f'<tr><td>{_esc(repo)}</td><td>{url_cell}</td>'
-            f'<td class="text-muted small">{_esc(match)}</td></tr>'
-        )
-    rows_github = "\n".join(rows_github_parts)
-
-    google_findings = sorted(
-        gdorks.get("findings", []),
-        key=lambda f: (not f.get("results_found", False)),
-    )
-    rows_google_parts = []
-    for f in google_findings:
-        if not isinstance(f, dict):
-            continue
-        hit = ('<span class="text-success">yes</span>'
-               if f.get("results_found") else '<span class="text-muted">no</span>')
-        # Prefer title→URL pairs (Tavily); fall back to bare URL list.
-        results = f.get("results") or []
-        if results:
-            tops_cell = "<br>".join(
-                f'<a href="{_esc(str(r.get("url","")))}" target="_blank">'
-                f'{_esc((r.get("title") or r.get("url","") or "")[:90])}</a>'
-                for r in results[:3] if isinstance(r, dict)
-            )
-        else:
-            tops = f.get("top_results", []) or []
-            tops_cell = "<br>".join(
-                f'<a href="{_esc(str(u))}" target="_blank">{_esc(str(u)[:90])}</a>' for u in tops[:3]
-            )
-        rows_google_parts.append(
-            f'<tr><td class="small">{_esc(str(f.get("dork","")))}</td>'
-            f'<td>{hit}</td><td class="small">{tops_cell}</td>'
-            f'<td class="text-muted small">{_esc(str(f.get("note","")))}</td></tr>'
-        )
-    rows_google = "\n".join(rows_google_parts)
-
-    # ── IP → FQDN ──
-    ip_results = ip_data.get("results", [])
-    rows_ip_parts = []
-    for r in ip_results:
-        if not isinstance(r, dict):
-            continue
-        fqdns = ", ".join(r.get("fqdns", []) or [])
-        valid = ('<span class="text-success">yes</span>'
-                 if r.get("validated") else '<span class="text-muted">no</span>')
-        rows_ip_parts.append(
-            f'<tr><td>{_esc(str(r.get("ip","")))}</td>'
-            f'<td>{_esc(fqdns)}</td><td>{valid}</td>'
-            f'<td class="small">{_esc(str(r.get("status","")))}</td></tr>'
-        )
-    rows_ip = "\n".join(rows_ip_parts)
-
-    # ── JS Analysis (semgrep + DOM) ──
-    jsa_counts = jsa_data.get("counts", {})
-    jsa_by_asset = jsa_data.get("by_asset", {})
-    rows_jsa = "\n".join(
-        f'<tr><td>{_esc(asset)}</td>'
-        f'<td>{a.get("findings", 0)}</td>'
-        f'<td class="{"text-danger" if a.get("high") else ""}">{a.get("high", 0)}</td>'
-        f'<td class="{"text-warning" if a.get("medium") else ""}">{a.get("medium", 0)}</td>'
-        f'<td>{a.get("dom", 0)}</td>'
-        f'<td>{a.get("sinks", 0)}</td><td>{a.get("postmessage", 0)}</td></tr>'
-        for asset, a in sorted(jsa_by_asset.items(),
-                               key=lambda kv: kv[1].get("findings", 0), reverse=True)
-    )
-    jsa_report = jsa_data.get("report_file", "")
-    jsa_report_link = (
-        f'<a href="{_esc(Path(jsa_report).name)}" target="_blank">semgrep_report.html</a>'
-        if jsa_report else "<span class=\"text-muted\">(not generated)</span>"
-    )
-    jsa_semgrep_note = ("" if jsa_data.get("semgrep_available", False)
-                        else "<em>semgrep not installed — DOM heuristics only.</em>")
-
-    # ── Charts ──
     all_tool_results = (
         sub_data.get("tool_results", [])
         + val_data.get("tool_results", [])
+        + recon_data.get("tool_results", [])
         + js_data.get("tool_results", [])
         + collect_data.get("tool_results", [])
+        + jsa_data.get("tool_results", [])
         + cloud_data.get("tool_results", [])
         + email_data.get("tool_results", [])
         + exposure_data.get("tool_results", [])
         + ip_data.get("tool_results", [])
-        + jsa_data.get("tool_results", [])
     )
 
-    html = _HTML_TEMPLATE.format(
-        target=_esc(domain),
-        generated=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        total_subdomains=len(all_subs),
-        total_live=len(hosts),
-        total_endpoints=len(endpoints),
-        total_collected=collect_counts.get("downloaded", 0),
-        total_js_findings=jsa_counts.get("findings", 0) + jsa_counts.get("dom", 0),
-        jsa_total=jsa_counts.get("findings", 0),
-        jsa_high=jsa_counts.get("high", 0),
-        jsa_medium=jsa_counts.get("medium", 0),
-        jsa_dom=jsa_counts.get("dom", 0),
-        jsa_sinks=jsa_counts.get("sinks", 0),
-        jsa_postmessage=jsa_counts.get("postmessage", 0),
-        jsa_report_link=jsa_report_link,
-        jsa_semgrep_note=jsa_semgrep_note,
-        rows_jsa=rows_jsa,
-        collected_ok=collect_counts.get("downloaded", 0),
-        collected_skip=collect_counts.get("skipped", 0),
-        collected_fail=collect_counts.get("failed", 0),
-        rows_collected=rows_collected,
-        total_cloud=cloud_data.get("total", 0),
-        total_emails=len(all_emails),
-        total_ip_fqdns=len(ip_data.get("validated_fqdns", [])),
-        ip_total=ip_data.get("total_ips", 0),
-        ip_resolved=ip_data.get("resolved", 0),
-        ip_validated=len(ip_data.get("validated_fqdns", [])),
-        rows_ip=rows_ip,
-        total_exposures=exposure_data.get("total", 0),
-        total_secrets=len(secrets),
-        total_js=len(js_files),
-        total_api=len(api_paths),
-        total_usernames=len(usernames),
-        cnt_s3=len(assets.get("s3", [])),
-        cnt_azure=len(assets.get("azure", [])),
-        cnt_gcp=len(assets.get("gcp", [])),
-        cnt_func=len(assets.get("functions", [])),
-        rows_subdomains=rows_subdomains,
-        rows_live=rows_live,
-        rows_endpoints=rows_endpoints,
-        rows_js=rows_js,
-        rows_api=rows_api,
-        rows_s3=rows_s3,
-        rows_azure=rows_azure,
-        rows_gcp=rows_gcp,
-        rows_func=rows_func,
-        rows_emails=rows_emails,
-        rows_usernames=rows_usernames,
-        cnt_leakix=leakix.get("count", 0),
-        cnt_github=gitminer.get("count", 0),
-        cnt_google=gdorks.get("count", 0),
-        cnt_google_total=gdorks.get("dorks_total", 0),
-        leakix_method=leakix.get("method", "n/a"),
-        rows_leakix=rows_leakix,
-        rows_github=rows_github,
-        rows_google=rows_google,
-        rows_secrets=rows_secrets,
-        chart_sources_json=_build_chart_sources(subs_by_tool),
-        chart_status_json=_build_chart_status(hosts),
-        chart_tools_json=_build_chart_tools(all_tool_results),
-    )
+    # Write each stage page. (03-nuclei.html and 06-js-analysis.html are written
+    # by their own stages; here we only own the rest.)
+    pages: dict[str, str] = {
+        "01-subdomains.html": _page_subdomains(domain, sub_data),
+        "02-live-hosts.html": _page_live_hosts(domain, val_data),
+        "04-endpoints.html":  _page_endpoints(domain, js_data),
+        "05-assets.html":     _page_assets(domain, collect_data),
+        "07-cloud.html":      _page_cloud(domain, cloud_data),
+        "08-email.html":      _page_email(domain, email_data),
+        "09-exposure.html":   _page_exposure(domain, exposure_data),
+        "ip-fqdn.html":       _page_ip(domain, ip_data),
+        "secrets.html":       _page_secrets(domain, js_data),
+        "index.html":         _page_index(
+            domain, sub_data, val_data, js_data, collect_data, cloud_data,
+            email_data, exposure_data, ip_data, jsa_data, recon_data,
+            all_tool_results),
+    }
+    for filename, html in pages.items():
+        (reports_dir / filename).write_text(html, encoding="utf-8")
 
-    report_path = outdir / f"report_{domain}.html"
-    report_path.write_text(html, encoding="utf-8")
-    log.info("Report written to: %s", report_path)
-    return report_path
+    # 03-nuclei.html and 06-js-analysis.html are written by their own stages.
+    # If those stages were skipped, drop a placeholder so nav links never 404.
+    placeholders = {
+        "03-nuclei.html":      ("Nuclei Vulnerability Scan",
+                                 "Stage 3 (gowitness + nuclei) was not run for this scan."),
+        "06-js-analysis.html": ("JS Analysis",
+                                 "Stage 6 (semgrep + DOM analysis) was not run for this scan."),
+    }
+    for filename, (subtitle, msg) in placeholders.items():
+        if not (reports_dir / filename).exists():
+            body = _section(subtitle, f'<p class="text-muted">{esc(msg)}</p>')
+            (reports_dir / filename).write_text(
+                page(domain, filename, subtitle, body), encoding="utf-8")
+
+    index_path = reports_dir / "index.html"
+    log.info("Reports written to: %s (%d pages)", reports_dir, len(pages))
+    return index_path

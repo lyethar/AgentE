@@ -42,7 +42,23 @@ validation:
     extra_args: []
     # extra_args: ["-screenshot", "-screenshot-timeout", "10"]
 
-# Stage 3: JS & Endpoint Enumeration
+# Stage 3: Screenshots & Vulnerability Scanning (gowitness + nuclei)
+# Runs against the live URLs from Stage 2. Both scans use timeout 0 (no limit)
+# so they are never killed before finishing.
+recon:
+  gowitness:
+    timeout: 0             # no timeout — screenshotting many hosts can run long
+    report_server: true    # after scanning, launch `gowitness report server` (detached, never killed)
+    report_host: "0.0.0.0" # --host for the report server
+    report_port: 0         # 0 = gowitness default (7171); set to override with --port
+    extra_args: []
+
+  nuclei:
+    timeout: 0             # no timeout — template scans can run long
+    extra_args: []
+    # extra_args: ["-severity", "critical,high,medium", "-rate-limit", "150"]
+
+# Stage 4: Crawl — JS & Endpoint Enumeration (gospider, katana, waymore)
 js_enum:
   gospider:
     timeout: 600
@@ -60,7 +76,14 @@ js_enum:
     extra_args: []
     # extra_args: ["-headless", "-xhr", "-form"]
 
-# Stage 4: Asset Collection & JavaScript Download
+  waymore:
+    enabled: true
+    mode: "U"              # -mode: U = URLs only
+    timeout: 0             # no timeout — archive APIs can be slow; never killed early
+    extra_args: []
+    # extra_args: ["-f"]   # e.g. filter results
+
+# Stage 5: Asset Collection & JavaScript Download
 collect:
   workers: 10             # concurrent download threads
   timeout: 30            # per-file HTTP timeout (seconds)
@@ -69,7 +92,7 @@ collect:
     enabled: true         # format downloaded JS with Prettier (npx/global prettier)
                           # no time limit — large/minified bundles run to completion
 
-# Stage 5: Client-Side JavaScript Analysis (semgrep + DOM heuristics)
+# Stage 6: Client-Side JavaScript Analysis (semgrep + DOM heuristics)
 js_analysis:
   enabled: true
   timeout: 0              # per-directory semgrep timeout (0 = no limit)
@@ -79,7 +102,7 @@ js_analysis:
   #   - p/secrets
   #   - p/xss
 
-# Stage 6: Cloud Infrastructure
+# Stage 7: Cloud Infrastructure
 cloud:
   cloud_enum:
     timeout: 0            # no timeout — cloud_enum brute-forces many providers
@@ -92,7 +115,7 @@ cloud:
     wordlist: ""          # path to custom wordlist
     extra_args: []
 
-# Stage 7: Email & Username Enumeration
+# Stage 8: Email & Username Enumeration
 email:
   intelx:
     # IntelX / phonebook.cz phonebook API (https://free.intelx.io).
@@ -108,7 +131,7 @@ email:
     extra_args: []
     # extra_args: ["-d", "2"]   # e.g. crawl depth
 
-# Stage 8: Exposure & Secrets Discovery (LeakIX, Gitminer3, Google dorks)
+# Stage 9: Exposure & Secrets Discovery (LeakIX, Gitminer3, Google dorks)
 exposure:
   leakix:
     # Queried programmatically via the LeakIX JSON API.
