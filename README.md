@@ -116,7 +116,7 @@ pip install -r requirements.txt
 | `katana` | 4 | `go install github.com/projectdiscovery/katana/cmd/katana@latest` |
 | `waymore` | 4 | `pip install waymore` — historical/archived URL discovery |
 | `semgrep` | 6 | `pip install semgrep` (optional — DOM heuristics still run without it) |
-| `cloud_enum` | 7 | `pip install cloud-enum` |
+| `cloud_enum` | 7 | `python install_tools.py cloud_enum` ← auto-installer (the PyPI `cloud-enum` is an empty placeholder) |
 | `pycroburst` | 7 | `python install_tools.py pycroburst` ← auto-installer |
 | `linkedin2username` | 8 | `python install_tools.py linkedin2username` ← auto-installer |
 | `gitminer3` | 9 | `python install_tools.py gitminer3` ← auto-installer (needs `GITHUB_TOKEN`) |

@@ -26,8 +26,11 @@ ARG GOSPIDER_VERSION=v1.1.6
 ARG KATANA_VERSION=v1.1.0
 ARG MASSDNS_REF=master
 
-ENV GOBIN=/go/bin \
-    CGO_ENABLED=0
+# NOTE: do NOT set CGO_ENABLED=0 — katana's go-tree-sitter dependency is a CGO
+# (C-backed) library and fails to build without cgo. The builder and the final
+# runtime are both Debian bookworm (glibc), so dynamically-linked binaries copied
+# from here run fine in the slim runtime.
+ENV GOBIN=/go/bin
 
 # ProjectDiscovery + community Go tools.
 RUN go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@${SUBFINDER_VERSION} \
@@ -93,9 +96,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       dnsgen \
       waymore \
       semgrep \
-      cloud-enum \
       tavily-python \
  && pip check || true
+# NOTE: cloud_enum is intentionally NOT pip-installed — the PyPI "cloud-enum"
+# package is an empty placeholder. The real tool is cloned by install_tools.py
+# below (it is a MANAGED_TOOLS git-clone entry).
 
 # Prettier (optional JS beautifier used by Stage 5).
 RUN npm install -g prettier

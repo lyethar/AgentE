@@ -72,6 +72,18 @@ MANAGED_TOOLS: list[dict] = [
         ],
         "description":  "GitHub secret/dork mining (Stage 7) — needs a GITHUB_TOKEN",
     },
+    {
+        # The PyPI "cloud-enum" package is an empty placeholder — the real tool
+        # only ships as a git repo, so install it the git-clone way.
+        "name":         "cloud_enum",
+        "aliases":      ["cloud-enum", "cloudenum", "cloud_enum"],
+        "repo":         "https://github.com/initstring/cloud_enum",
+        "clone_dir":    "cloud_enum",
+        "entry_points": [
+            {"wrapper": "cloud_enum", "script": "cloud_enum.py"},
+        ],
+        "description":  "Multi-cloud storage bucket/blob enumeration (Stage 7)",
+    },
 ]
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -91,9 +103,11 @@ GO_TOOLS: list[tuple[str, str, str]] = [
     ("katana",    "github.com/projectdiscovery/katana/cmd/katana",           "v1.1.0"),
 ]
 
-# pip tools installed straight from PyPI.
+# pip tools installed straight from PyPI. (cloud_enum is NOT here — the PyPI
+# "cloud-enum" package is an empty placeholder; the real tool is a git-clone
+# entry in MANAGED_TOOLS.)
 PIP_TOOLS: list[str] = [
-    "subscraper", "bbot", "dnsgen", "waymore", "semgrep", "cloud-enum", "tavily-python",
+    "subscraper", "bbot", "dnsgen", "waymore", "semgrep", "tavily-python",
 ]
 
 GOWITNESS_VERSION = "3.0.5"
