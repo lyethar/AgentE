@@ -92,7 +92,8 @@ collect:
     enabled: true         # format downloaded JS with Prettier (npx/global prettier)
                           # no time limit — large/minified bundles run to completion
 
-# Stage 6: Client-Side JavaScript Analysis (semgrep + DOM heuristics)
+# Stage 6: Client-Side JavaScript Analysis
+# (i) semgrep + DOM heuristics   (ii) secrets & JS-intel scanning
 js_analysis:
   enabled: true
   timeout: 0              # per-directory semgrep timeout (0 = no limit)
@@ -101,6 +102,20 @@ js_analysis:
   #   - p/owasp-top-ten
   #   - p/secrets
   #   - p/xss
+
+# Stage 6 (i): Secrets & JS-intel scanning of the downloaded assets
+secrets:
+  enabled: true
+  manual_scan:
+    enabled: true
+    max_file_mb: 5         # skip files larger than this (per-file, MB)
+  trufflehog:
+    enabled: true
+    timeout: 0             # no timeout — never killed before finishing
+    verify: false          # true = let trufflehog verify creds against live services
+                           # (active/intrusive); default off (--no-verification)
+    extra_args: []
+    # extra_args: ["--only-verified"]
 
 # Stage 7: Cloud Infrastructure
 cloud:

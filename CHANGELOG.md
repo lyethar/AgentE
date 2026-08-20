@@ -4,6 +4,21 @@ All notable changes to AgentE are documented here.
 
 ## [Unreleased]
 
+### Added — Stage 6 secrets scanning (JavaScript Analysis, branch i)
+- New `modules/secrets_scan.py`: scans the downloaded assets (Stage 5) with a
+  large regex catalog ported from the "JS Analyzer" Burp extension — high-value
+  **secrets** plus **endpoints**, **URLs**, **emails**, and sensitive **file**
+  references, behind an extensive noise-filter/validation layer. The two
+  ultra-generic 32-char patterns are keyword-gated to suppress hash noise.
+- Integrated **trufflehog** (`trufflehog filesystem <dir> --json`) for
+  detector-backed secret detection; credential verification is off by default
+  (`secrets.trufflehog.verify`). Pinned v3.97.0 in the image and installer.
+- Owns `reports/secrets.html` (trufflehog + regex secrets + JS-mined intel),
+  writes `secrets_findings.json` and `trufflehog.jsonl`. Runs in parallel with
+  the existing semgrep + DOM analysis (branch ii, unchanged).
+- `trufflehog` added to the pre-flight manifest, `install_tools.py --all`, the
+  Dockerfile, and `config.yaml` (`secrets:` section).
+
 ### Added — Packaging & Containerization
 - **Docker**: multi-stage `Dockerfile` (Go builder + `python:3.10-slim` runtime)
   that bundles every external tool — Go binaries, pip/npm tools, gowitness +

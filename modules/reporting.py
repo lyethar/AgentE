@@ -374,32 +374,18 @@ def _page_ip(domain: str, ip_data: dict) -> str:
     return page(domain, "ip-fqdn.html", "IP→FQDN", body)
 
 
-def _page_secrets(domain: str, js_data: dict) -> str:
-    secrets = js_data.get("potential_secrets", [])
-    rows = "\n".join(
-        f'<tr><td class="text-muted small">{esc(s["file"])}</td>'
-        f'<td><div class="secret-snippet">{esc(s["snippet"][:150])}</div></td></tr>'
-        for s in secrets
-    )
-    table = ('<table class="table table-sm w-100 dt">'
-             '<thead><tr><th>File</th><th>Pattern Match</th></tr></thead>'
-             f'<tbody>{rows}</tbody></table>')
-    body = _section("&#9888; Potential Secrets &amp; Sensitive Patterns", table,
-                    "Regex-matched patterns from crawled JS/pages. Verify manually.")
-    return page(domain, "secrets.html", "Secrets", body)
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Index dashboard
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _page_index(domain: str, sub_data, val_data, js_data, collect_data,
                 cloud_data, email_data, exposure_data, ip_data, jsa_data,
-                recon_data, all_tool_results) -> str:
+                recon_data, secrets_data, all_tool_results) -> str:
     subs_by_tool = sub_data.get("by_tool", {})
     hosts = val_data.get("live_hosts", [])
     jsa_counts = jsa_data.get("counts", {})
     rcounts = recon_data.get("counts", {})
+    scounts = secrets_data.get("counts", {})
 
     cards = "".join([
         _card(len(sub_data.get("all", [])), "Subdomains"),
@@ -413,7 +399,8 @@ def _page_index(domain: str, sub_data, val_data, js_data, collect_data,
         _card(len(email_data.get("emails", [])), "Emails"),
         _card(len(ip_data.get("validated_fqdns", [])), "IP&rarr;FQDN"),
         _card(exposure_data.get("total", 0), "Exposures"),
-        _card(len(js_data.get("potential_secrets", [])), "Secrets &#9888;"),
+        _card(scounts.get("secrets", 0) + scounts.get("trufflehog", 0), "Secrets &#9888;",
+              "sev-high" if scounts.get("trufflehog_verified") else ""),
     ])
 
     # Server link (if gowitness report server was launched)
@@ -522,12 +509,14 @@ def generate_report(
     ip_data:       dict | None = None,
     jsa_data:      dict | None = None,
     recon_data:    dict | None = None,
+    secrets_data:  dict | None = None,
 ) -> Path:
     log.info("=== Stage 10: Generating HTML Reports (split per stage) ===")
     exposure_data = exposure_data or {}
     ip_data       = ip_data or {}
     jsa_data      = jsa_data or {}
     recon_data    = recon_data or {"counts": {}, "screenshots": 0, "server": {}}
+    secrets_data  = secrets_data or {"counts": {}}
 
     reports_dir = Path(reports_dir)
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -545,8 +534,8 @@ def generate_report(
         + ip_data.get("tool_results", [])
     )
 
-    # Write each stage page. (03-nuclei.html and 06-js-analysis.html are written
-    # by their own stages; here we only own the rest.)
+    # Write each stage page. (03-nuclei.html, 06-js-analysis.html and secrets.html
+    # are written by their own stages; here we only own the rest.)
     pages: dict[str, str] = {
         "01-subdomains.html": _page_subdomains(domain, sub_data),
         "02-live-hosts.html": _page_live_hosts(domain, val_data),
@@ -556,22 +545,25 @@ def generate_report(
         "08-email.html":      _page_email(domain, email_data),
         "09-exposure.html":   _page_exposure(domain, exposure_data),
         "ip-fqdn.html":       _page_ip(domain, ip_data),
-        "secrets.html":       _page_secrets(domain, js_data),
         "index.html":         _page_index(
             domain, sub_data, val_data, js_data, collect_data, cloud_data,
             email_data, exposure_data, ip_data, jsa_data, recon_data,
-            all_tool_results),
+            secrets_data, all_tool_results),
     }
     for filename, html in pages.items():
         (reports_dir / filename).write_text(html, encoding="utf-8")
 
-    # 03-nuclei.html and 06-js-analysis.html are written by their own stages.
-    # If those stages were skipped, drop a placeholder so nav links never 404.
+    # 03-nuclei.html, 06-js-analysis.html and secrets.html are written by their
+    # own stages. If those stages were skipped, drop a placeholder so nav links
+    # never 404.
     placeholders = {
         "03-nuclei.html":      ("Nuclei Vulnerability Scan",
                                  "Stage 3 (gowitness + nuclei) was not run for this scan."),
         "06-js-analysis.html": ("JS Analysis",
                                  "Stage 6 (semgrep + DOM analysis) was not run for this scan."),
+        "secrets.html":        ("Secrets & JS Intel",
+                                 "Stage 6 secrets scanning (regex catalog + trufflehog) "
+                                 "was not run for this scan."),
     }
     for filename, (subtitle, msg) in placeholders.items():
         if not (reports_dir / filename).exists():

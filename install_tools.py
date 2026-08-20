@@ -111,6 +111,7 @@ PIP_TOOLS: list[str] = [
 ]
 
 GOWITNESS_VERSION = "3.0.5"
+TRUFFLEHOG_VERSION = "3.97.0"   # secret scanner (Stage 6); no leading 'v' in asset names
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -410,6 +411,51 @@ def install_gowitness(reinstall: bool = False) -> dict[str, bool]:
         return {"gowitness": False}
 
 
+def install_trufflehog(reinstall: bool = False) -> dict[str, bool]:
+    """Download the pinned trufflehog release tarball into tools/bin/."""
+    print()
+    print(bold("=== trufflehog (binary) ==="))
+    if _on_path("trufflehog") and not reinstall:
+        print(f"  {dim('[~]')} trufflehog already present — skipping")
+        return {"trufflehog": True}
+
+    sysname = platform.system().lower()
+    machine = platform.machine().lower()
+    arch = {"x86_64": "amd64", "amd64": "amd64",
+            "aarch64": "arm64", "arm64": "arm64"}.get(machine)
+    os_tag = {"linux": "linux", "darwin": "darwin", "windows": "windows"}.get(sysname)
+    if not arch or not os_tag:
+        print(err(f"  [-] No trufflehog asset for {platform.system()}/{platform.machine()}"))
+        return {"trufflehog": False}
+
+    asset = f"trufflehog_{TRUFFLEHOG_VERSION}_{os_tag}_{arch}.tar.gz"
+    url = (f"https://github.com/trufflesecurity/trufflehog/releases/download/"
+           f"v{TRUFFLEHOG_VERSION}/{asset}")
+    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    member = "trufflehog.exe" if IS_WINDOWS else "trufflehog"
+    dest = BIN_DIR / member
+    print(f"  {bold('[*]')} downloading {url}")
+    try:
+        import io
+        import tarfile
+        import urllib.request
+        with urllib.request.urlopen(url) as resp:  # noqa: S310
+            buf = io.BytesIO(resp.read())
+        with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+            src = tar.extractfile(member)
+            if src is None:
+                print(err(f"  [-] '{member}' not found in tarball"))
+                return {"trufflehog": False}
+            dest.write_bytes(src.read())
+        if not IS_WINDOWS:
+            dest.chmod(dest.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        print(f"  {ok('[+]')} trufflehog -> {dest}")
+        return {"trufflehog": True}
+    except Exception as exc:
+        print(err(f"  [-] trufflehog download failed: {exc}"))
+        return {"trufflehog": False}
+
+
 def install_all(reinstall: bool = False) -> dict[str, bool]:
     """Full native install: Go tools, pip tools, npm, gowitness, git-clone tools."""
     print()
@@ -422,6 +468,7 @@ def install_all(reinstall: bool = False) -> dict[str, bool]:
     results.update(install_pip_tools())
     results.update(install_npm_tools())
     results.update(install_gowitness(reinstall))
+    results.update(install_trufflehog(reinstall))
 
     # git-clone managed tools (pycroburst / linkedin2username / gitminer3)
     print()

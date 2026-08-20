@@ -56,6 +56,7 @@ FROM python:3.10-slim-bookworm AS final
 # GOWITNESS_SHA256; when empty the download proceeds with a warning.
 ARG GOWITNESS_VERSION=3.0.5
 ARG GOWITNESS_SHA256=""
+ARG TRUFFLEHOG_VERSION=3.97.0
 ARG TARGETARCH=amd64
 
 # tools/bin holds the git-clone wrappers; put it (and /usr/local/bin) first.
@@ -117,12 +118,21 @@ RUN set -eux; \
     chmod +x /usr/local/bin/gowitness; \
     gowitness version
 
+# trufflehog (Stage 6 secret scanning) — pinned release tarball.
+RUN set -eux; \
+    url="https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_linux_${TARGETARCH}.tar.gz"; \
+    curl -fsSL -o /tmp/trufflehog.tar.gz "$url"; \
+    tar -xzf /tmp/trufflehog.tar.gz -C /usr/local/bin trufflehog; \
+    rm /tmp/trufflehog.tar.gz; \
+    trufflehog --version
+
 # AgentE source (kept after the dependency layers so code edits don't bust them).
 COPY . .
 
-# Ensure the entrypoint is executable regardless of the source checkout's file
-# mode (e.g. cloned on Windows where the +x bit may be lost).
-RUN chmod +x entrypoint.sh
+# Ensure the entrypoint is executable and LF-terminated regardless of the source
+# checkout (e.g. cloned on Windows where the +x bit is lost and CRLF is added —
+# a CRLF shebang otherwise fails with `env: 'sh\r': No such file or directory`).
+RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
 
 # git-clone tools: pycroburst, linkedin2username, gitminer3 → tools/bin/.
 RUN python install_tools.py || true

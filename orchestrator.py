@@ -34,6 +34,7 @@ from modules.js_analysis import analyze_js
 from modules.js_enum     import enumerate_js
 from modules.recon_scan  import run_recon
 from modules.reporting  import generate_report
+from modules.secrets_scan import scan_secrets
 from modules.subdomains import enumerate_subdomains
 from modules.validation import validate_subdomains
 from utils.layout       import build_layout
@@ -70,6 +71,7 @@ TOOL_MANIFEST: list[dict] = [
     {"stage": 4, "bin": "katana",           "hint": "go install github.com/projectdiscovery/katana/cmd/katana@latest"},
     {"stage": 4, "bin": "waymore",          "hint": "pip install waymore  OR  https://github.com/xnl-h4ck3r/waymore"},
     {"stage": 6, "bin": "semgrep",          "hint": "pip install semgrep  (DOM heuristics still run without it)"},
+    {"stage": 6, "bin": "trufflehog",       "hint": "python install_tools.py --all  OR  https://github.com/trufflesecurity/trufflehog/releases", "managed": True},
     {"stage": 7, "bin": "cloud_enum",       "hint": "python install_tools.py cloud_enum",         "managed": True},
     {"stage": 7, "bin": "pycroburst",        "hint": "python install_tools.py pycroburst",        "managed": True},
     {"stage": 8, "bin": "linkedin2username", "hint": "python install_tools.py linkedin2username",   "managed": True},
@@ -227,6 +229,12 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
                              "dom": 0, "sinks": 0, "sources": 0,
                              "postmessage": 0, "listeners": 0},
                   "assets": 0, "report_file": "", "tool_results": []}
+    secrets_data = {"manual": {"secrets": [], "endpoints": [], "urls": [],
+                               "emails": [], "files": []},
+                    "trufflehog": [],
+                    "counts": {"secrets": 0, "trufflehog": 0, "trufflehog_verified": 0,
+                               "endpoints": 0, "urls": 0, "emails": 0, "files": 0, "total": 0},
+                    "report_file": "", "tool_results": []}
     cloud_data = {"assets": {}, "total": 0, "tool_results": []}
     email_data = {"emails": [], "usernames": [], "tool_results": []}
     ip_data    = {"results": [], "errors": [], "total_ips": 0, "resolved": 0,
@@ -294,9 +302,14 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
     if 5 in stages:
         collect_data = await collect_assets(dirs["crawl"], dirs["assets"], cfg, js_data)
 
-    # ── Stage 6: Client-Side JS Analysis — semgrep + DOM (depends on Stage 5) ──
+    # ── Stage 6: Client-Side JS Analysis (depends on Stage 5) ──
+    #    (i) secrets & JS-intel scanning (manual catalog + trufflehog)
+    #    (ii) semgrep + DOM heuristics
     if 6 in stages:
-        jsa_data = await analyze_js(dirs["jsanalysis"], reports, cfg, collect_data)
+        jsa_data, secrets_data = await asyncio.gather(
+            analyze_js(dirs["jsanalysis"], reports, cfg, collect_data),
+            scan_secrets(domain, dirs["jsanalysis"], reports, cfg, collect_data),
+        )
 
     # ── Stage 7 & 8 run in parallel (independent of each other) ──
     async def _cloud():
@@ -316,7 +329,7 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
         report_path = generate_report(
             domain, reports, sub_data, val_data, js_data,
             collect_data, cloud_data, email_data, exposure_data, ip_data, jsa_data,
-            recon_data,
+            recon_data, secrets_data,
         )
         log.info("HTML report: file://%s", report_path.resolve())
 
@@ -356,7 +369,9 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
           f"(leakix={exposure_data.get('leakix', {}).get('count', 0)} "
           f"github={exposure_data.get('gitminer', {}).get('count', 0)} "
           f"gdork={exposure_data.get('google_dorks', {}).get('count', 0)})")
-    print(f"  Secrets     : {len(js_data.get('potential_secrets', []))}")
+    print(f"  Secrets     : {secrets_data['counts'].get('secrets', 0)} regex + "
+          f"{secrets_data['counts'].get('trufflehog', 0)} trufflehog "
+          f"(verified={secrets_data['counts'].get('trufflehog_verified', 0)})")
     print(f"  Duration    : {elapsed:.1f}s")
     print(f"  Output      : {outdir}")
     print(sep)
@@ -393,6 +408,10 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
             "github_leaks":   exposure_data.get("gitminer", {}).get("count", 0),
             "google_hits":    exposure_data.get("google_dorks", {}).get("count", 0),
             "secrets":        len(js_data.get("potential_secrets", [])),
+            "js_secrets_regex":       secrets_data["counts"].get("secrets", 0),
+            "js_secrets_trufflehog":  secrets_data["counts"].get("trufflehog", 0),
+            "js_secrets_verified":    secrets_data["counts"].get("trufflehog_verified", 0),
+            "js_intel_endpoints":     secrets_data["counts"].get("endpoints", 0),
         },
     }
     (outdir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

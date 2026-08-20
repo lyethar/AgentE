@@ -116,6 +116,7 @@ pip install -r requirements.txt
 | `katana` | 4 | `go install github.com/projectdiscovery/katana/cmd/katana@latest` |
 | `waymore` | 4 | `pip install waymore` — historical/archived URL discovery |
 | `semgrep` | 6 | `pip install semgrep` (optional — DOM heuristics still run without it) |
+| `trufflehog` | 6 | `python install_tools.py --all` ← auto-installer, OR a release binary from https://github.com/trufflesecurity/trufflehog/releases |
 | `cloud_enum` | 7 | `python install_tools.py cloud_enum` ← auto-installer (the PyPI `cloud-enum` is an empty placeholder) |
 | `pycroburst` | 7 | `python install_tools.py pycroburst` ← auto-installer |
 | `linkedin2username` | 8 | `python install_tools.py linkedin2username` ← auto-installer |
@@ -131,7 +132,7 @@ Tools that are missing are skipped gracefully at runtime — you only get output
 >
 > **Stage 5** (Asset Collection) needs no external binary — it uses the bundled `requests` library to download files. If `prettier` (or `npx`) is available it also pretty-prints the downloaded JavaScript for readable client-side review; if not, that step is skipped.
 >
-> **Stage 6** (JS Analysis) runs `semgrep` (a broad set of rule packs) over the collected JavaScript and adds regex-based DOM source/sink/postMessage/listener heuristics. The DOM heuristics are pure Python and always run; if `semgrep` isn't installed, that part is skipped. A standalone `reports/06-js-analysis.html` is written.
+> **Stage 6** (JS Analysis) has two branches. **(i) Secrets & JS-intel:** a manual regex catalog (high-value secret patterns plus endpoints, URLs, emails and sensitive file references, with an extensive noise filter) scans the downloaded assets, and `trufflehog filesystem` adds detector-backed secret detection — results go to `reports/secrets.html`. **(ii) Static analysis:** `semgrep` (a broad set of rule packs) over the collected JavaScript plus regex-based DOM source/sink/postMessage/listener heuristics → `reports/06-js-analysis.html`. The DOM heuristics are pure Python and always run; `semgrep` and `trufflehog` degrade gracefully if absent. TruffleHog credential *verification* is off by default (it actively tests found creds against live services); enable it with `secrets.trufflehog.verify: true`.
 >
 > **Stage 9** (Exposure) writes its full dork lists (`dorks.txt`, `google_dorks.txt`) regardless of which tools are present. LeakIX is queried programmatically via its JSON API (key from `exposure.leakix.api_key` or the `LEAKIX_API_KEY` env var); Gitminer3 is skipped if missing; Google dorking is skipped unless `tavily-python` is installed and `TAVILY_API_KEY` is set.
 
@@ -354,11 +355,11 @@ directly in a browser.
 - **04-endpoints.html** — all discovered URLs (JS flagged), a JS-files tab, an API-paths tab, and a **waymore** archive tab with JS-flagged historical URLs
 - **05-assets.html** — per-asset download counts (JS/JSON/config) with download/skip/fail totals
 - **06-js-analysis.html** — semgrep findings + DOM source/sink/postMessage heuristics per asset
+- **secrets.html** — Stage 6 secret scanning: trufflehog findings (verified flagged) + regex-catalog secrets, plus endpoints/URLs/emails/file references mined from the downloaded JS
 - **07-cloud.html** — S3 buckets, Azure blob storage, GCP, serverless functions
 - **08-email.html** — email addresses with source, LinkedIn usernames
 - **09-exposure.html** — LeakIX leaks, GitHub secret hits (Gitminer3), Google dork findings
 - **ip-fqdn.html** — reverse-DNS results per supplied IP with FCrDNS validation status
-- **secrets.html** — regex-matched patterns from crawled JS (verify manually)
 
 All tables have live search, column sort, and pagination.
 
@@ -373,7 +374,7 @@ All tables have live search, column sort, and pagination.
 | 3 | Screenshots & Vuln Scan | gowitness (+ report server), nuclei | live URLs | `03-screenshots/{screenshots/, gowitness.sqlite3, nuclei-results.out}`, `reports/03-nuclei.html` |
 | 4 | JS & Endpoint Crawl | gospider, katana, waymore | live URLs + domain | `04-crawl/{endpoints_all.txt, waymore-urs.txt}` |
 | 5 | Asset Collection | `requests` (built-in), Prettier (optional) | Stage 4 crawl output | `05-assets/collected/<asset>/{js,json,config}/`, `asset_manifest.json` |
-| 6 | JS Analysis | semgrep (optional), DOM heuristics (built-in) | Stage 5 collected JS | `reports/06-js-analysis.html`, `06-js-analysis/semgrep_raw/` |
+| 6 | JS Analysis | semgrep + DOM heuristics; regex secret catalog + trufflehog | Stage 5 collected JS | `reports/06-js-analysis.html`, `reports/secrets.html`, `06-js-analysis/{semgrep_raw/, secrets_findings.json, trufflehog.jsonl}` |
 | 7 | Cloud Infrastructure | cloud_enum, pycroburst | domain keyword | cloud asset lists |
 | 8 | Email Intelligence | IntelX/phonebook.cz API, linkedin2username | domain, company | `08-email/{emails_all.txt, usernames_all.txt, linkedin/}` |
 | 9 | Exposure & Secrets | LeakIX, Gitminer3, Google dorks (Tavily API) | domain, company | `09-exposure/{dorks.txt, google_dork_*, leakix.json, gitminer/}` |
