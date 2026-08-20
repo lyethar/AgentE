@@ -32,7 +32,67 @@ Target Domain
 
 ---
 
-## Requirements
+## Quick start (Docker) — recommended
+
+The container ships **every** external tool (Go binaries, pip/npm tools, gowitness
++ Chromium, massdns, nuclei templates, git-clone tools) so there is nothing to
+install by hand. You need only Docker + Docker Compose.
+
+```bash
+git clone https://github.com/lyethar/AgentE && cd AgentE
+cp .env.example .env          # fill in API keys you have (all optional)
+
+# Prove every tool resolves inside the image:
+docker compose run --rm scan --check-tools
+
+# Run a scan against an authorized target:
+docker compose run --rm scan -d example.com -c "Acme Corp"
+
+# Reports + all stage output appear on the host under ./output/<domain>/<ts>/
+# Screenshots gallery (gowitness report server):
+open http://localhost:7171
+```
+
+Prefer the **published image** (no local build)? It's on GHCR:
+
+```bash
+docker pull ghcr.io/lyethar/agente:latest
+docker run --rm --env-file .env -p 7171:7171 \
+  -v "$PWD/output:/app/output" -v "$PWD/config.yaml:/app/config.yaml:ro" \
+  ghcr.io/lyethar/agente:latest -d example.com
+```
+
+**Notes**
+- **Secrets** are read from `.env` at run time and are never baked into the image.
+- **`docker compose run`** (foreground, one-shot) is the right pattern — not `up`.
+  Long, no-timeout tools (bbot, nuclei, waymore) can make a run lengthy.
+- **Stage 8 (LinkedIn)** needs an interactive login and is **skipped automatically**
+  when there is no TTY, so the default run never hangs. To run it, attach a terminal:
+  `docker compose run --rm -it scan -d example.com -c "Acme Corp" --stages 8`.
+- **Stop the report server** by stopping the container (`docker compose down` or
+  `Ctrl-C` on the `run`) — that frees port 7171.
+- **Networking:** uncomment `network_mode: host` in `docker-compose.yml` if your
+  resolver/VPN setup requires it (then the `7171` port mapping is bypassed and the
+  server binds the host directly).
+
+For a fully native setup instead, see **[Native install](#native-install-fallback)** below.
+
+---
+
+## Native install (fallback)
+
+Don't want containers? One command installs everything (mirrors the image):
+
+```bash
+pip install -r requirements.txt
+python install_tools.py --all      # Go tools, pip tools, prettier, gowitness, git-clone tools
+python orchestrator.py --check-tools
+```
+
+`--all` is idempotent and OS-aware. On Linux it also expects `massdns` (the
+puredns backend) — build it from https://github.com/blechschmidt/massdns if the
+pre-flight flags it missing. To install tools individually instead, use the table
+below.
 
 **Python 3.10+**
 
@@ -56,7 +116,7 @@ pip install -r requirements.txt
 | `katana` | 4 | `go install github.com/projectdiscovery/katana/cmd/katana@latest` |
 | `waymore` | 4 | `pip install waymore` — historical/archived URL discovery |
 | `semgrep` | 6 | `pip install semgrep` (optional — DOM heuristics still run without it) |
-| `cloud_enum` | 7 | `pip install cloud-enum` |
+| `cloud_enum` | 7 | `python install_tools.py cloud_enum` ← auto-installer (the PyPI `cloud-enum` is an empty placeholder) |
 | `pycroburst` | 7 | `python install_tools.py pycroburst` ← auto-installer |
 | `linkedin2username` | 8 | `python install_tools.py linkedin2username` ← auto-installer |
 | `gitminer3` | 9 | `python install_tools.py gitminer3` ← auto-installer (needs `GITHUB_TOKEN`) |

@@ -127,6 +127,10 @@ email:
     # Runs interactively (its output is visible and it prompts for a browser
     # login) and NEVER times out — it is only stopped once it completes.
     # -c (company) and -n (domain) are supplied automatically from the CLI.
+    # When there is no interactive terminal (e.g. `docker compose run` without
+    # -it, or CI) this stage is skipped so the pipeline never hangs on the login
+    # prompt. Set force: true to attempt it anyway (only useful with a TTY).
+    force: false
     sleep: 30            # -s: seconds to sleep between LinkedIn page requests
     extra_args: []
     # extra_args: ["-d", "2"]   # e.g. crawl depth

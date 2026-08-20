@@ -70,7 +70,7 @@ TOOL_MANIFEST: list[dict] = [
     {"stage": 4, "bin": "katana",           "hint": "go install github.com/projectdiscovery/katana/cmd/katana@latest"},
     {"stage": 4, "bin": "waymore",          "hint": "pip install waymore  OR  https://github.com/xnl-h4ck3r/waymore"},
     {"stage": 6, "bin": "semgrep",          "hint": "pip install semgrep  (DOM heuristics still run without it)"},
-    {"stage": 7, "bin": "cloud_enum",       "hint": "pip install cloud-enum  OR  https://github.com/initstring/cloud_enum"},
+    {"stage": 7, "bin": "cloud_enum",       "hint": "python install_tools.py cloud_enum",         "managed": True},
     {"stage": 7, "bin": "pycroburst",        "hint": "python install_tools.py pycroburst",        "managed": True},
     {"stage": 8, "bin": "linkedin2username", "hint": "python install_tools.py linkedin2username",   "managed": True},
     {"stage": 9, "bin": "gitminer3",        "hint": "python install_tools.py gitminer3",          "managed": True},
@@ -157,7 +157,9 @@ def parse_args() -> argparse.Namespace:
         description="AgentE — Agentic Enumeration Orchestrator",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("-d", "--domain",   required=True,  help="Target domain (e.g. example.com)")
+    p.add_argument("-d", "--domain",   default="",
+                   help="Target domain (e.g. example.com). Required for a scan; "
+                        "optional with --check-tools/--install-tools")
     p.add_argument("-c", "--company",  default="",     help="Company name for LinkedIn enumeration")
     p.add_argument("-i", "--ip-list",  default="",
                    help="Optional file of IPs/CIDRs to reverse-resolve and validate (FQDN/FCrDNS)")
@@ -418,6 +420,10 @@ def main():
 
     if args.check_tools:
         sys.exit(0)
+
+    if not args.domain:
+        print("  Error: -d/--domain is required to run a scan.\n")
+        sys.exit(2)
 
     # Build the run directory + per-stage layout only once we're actually scanning.
     outdir = prepare_output_dir(args.domain, cfg, args.output)

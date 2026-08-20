@@ -1,6 +1,11 @@
 # Scan output — can be large and contains target data
 output/
 
+# Secrets / local environment (never commit real API keys)
+.env
+*.env
+!.env.example
+
 # Cloned tools and generated wrappers
 tools/
 

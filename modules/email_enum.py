@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -174,6 +175,24 @@ async def run_linkedin2username(company: str, domain: str, outdir: Path, cfg: di
     is shown live and it can read stdin — and with *no timeout*, so it is never
     killed before it finishes.
     """
+    # linkedin2username needs an interactive terminal for its LinkedIn login
+    # (it waits for the user to press Enter). When AgentE runs non-interactively
+    # — e.g. the default `docker compose run` full pipeline, CI, or any piped
+    # invocation — there is no TTY to answer the prompt, so the tool would hang
+    # forever. Detect that up front and skip it rather than blocking the run.
+    # Override with `email.linkedin2username.force: true` (or an interactive
+    # `docker compose run --rm -it scan … --stages 8`).
+    if not cfg.get("force", False) and not (sys.stdin and sys.stdin.isatty()):
+        log.warning("linkedin2username requires an interactive login (TTY); "
+                    "no TTY detected — skipping. Run Stage 8 with an attached "
+                    "terminal (e.g. `docker compose run --rm -it scan … --stages 8`) "
+                    "or set email.linkedin2username.force=true to force it.")
+        return ToolResult(
+            tool="linkedin2username", cmd=["linkedin2username"], returncode=-1,
+            stdout="", stderr="", duration=0.0, skipped=True,
+            skip_reason="no interactive TTY for LinkedIn login",
+        )
+
     cmd = [
         "linkedin2username",
         "-s", str(cfg.get("sleep", 30)),
