@@ -157,7 +157,9 @@ def parse_args() -> argparse.Namespace:
         description="AgentE — Agentic Enumeration Orchestrator",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("-d", "--domain",   required=True,  help="Target domain (e.g. example.com)")
+    p.add_argument("-d", "--domain",   default="",
+                   help="Target domain (e.g. example.com). Required for a scan; "
+                        "optional with --check-tools/--install-tools")
     p.add_argument("-c", "--company",  default="",     help="Company name for LinkedIn enumeration")
     p.add_argument("-i", "--ip-list",  default="",
                    help="Optional file of IPs/CIDRs to reverse-resolve and validate (FQDN/FCrDNS)")
@@ -418,6 +420,10 @@ def main():
 
     if args.check_tools:
         sys.exit(0)
+
+    if not args.domain:
+        print("  Error: -d/--domain is required to run a scan.\n")
+        sys.exit(2)
 
     # Build the run directory + per-stage layout only once we're actually scanning.
     outdir = prepare_output_dir(args.domain, cfg, args.output)

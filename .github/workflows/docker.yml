@@ -1,0 +1,123 @@
+name: docker
+
+# Build the image on every PR (no push) and, on a version tag, publish it to
+# GHCR. A smoke-test job proves every required tool resolves inside the image.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+env:
+  IMAGE: ghcr.io/lyethar/agente
+
+jobs:
+  # ── Build + smoke-test the image (all triggers) ──────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (load locally, don't push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: agente:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The pre-flight exits non-zero if any required tool is missing, so this
+      # single command is the regression guard against upstream/dep drift.
+      - name: Smoke test — all required tools present
+        run: |
+          docker run --rm agente:ci --check-tools | tee preflight.txt
+          grep -q "Missing: 0" preflight.txt
+
+  # ── Publish to GHCR on version tags ──────────────────────────────────────────
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      # amd64 only: gowitness/massdns arm64 binaries are not guaranteed (see
+      # Phase 4.3). Add linux/arm64 here only once those are confirmed.
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Native fallback parity: install_tools.py --all on a clean runner ─────────
+  native-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Node.js (for prettier)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: massdns (puredns backend)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git make gcc libc-dev
+          git clone --depth 1 https://github.com/blechschmidt/massdns /tmp/massdns
+          make -C /tmp/massdns
+          sudo cp /tmp/massdns/bin/massdns /usr/local/bin/massdns
+
+      - name: Install AgentE deps
+        run: pip install -r requirements.txt
+
+      - name: Native full install (--all)
+        run: python install_tools.py --all
+
+      - name: Verify pre-flight (required tools present)
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          python orchestrator.py --check-tools --skip-missing | tee preflight.txt
+          # --skip-missing keeps this informational; tighten to `grep "Missing: 0"`
+          # once all upstreams are confirmed installable on the runner.

@@ -1,0 +1,40 @@
+# Keep the build context small and secret-free.
+
+# Run output & artefacts
+output/
+**/screenshots/
+*.sqlite3
+
+# Secrets / local env
+.env
+*.env
+!.env.example
+
+# Version control & CI
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# Python caches / venvs
+__pycache__/
+**/__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Cloned tool checkouts (rebuilt inside the image by install_tools.py)
+tools/
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Docs images (not needed at build time)
+Gemini_Generated_Image_*.png

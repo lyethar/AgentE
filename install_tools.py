@@ -74,6 +74,30 @@ MANAGED_TOOLS: list[dict] = [
     },
 ]
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Native full-install definitions (used by `--all`)
+# These mirror the pinned versions in the Dockerfile so the native path and the
+# container converge on the same tools. Everything is idempotent: a tool already
+# resolvable on PATH (or in tools/bin/) is left alone.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Go tools: (binary name, module path, pinned version)
+GO_TOOLS: list[tuple[str, str, str]] = [
+    ("subfinder", "github.com/projectdiscovery/subfinder/v2/cmd/subfinder", "v2.6.6"),
+    ("puredns",   "github.com/d3mondev/puredns/v2",                          "v2.1.1"),
+    ("httpx",     "github.com/projectdiscovery/httpx/cmd/httpx",             "v1.6.9"),
+    ("nuclei",    "github.com/projectdiscovery/nuclei/v3/cmd/nuclei",        "v3.3.7"),
+    ("gospider",  "github.com/jaeles-project/gospider",                      "v1.1.6"),
+    ("katana",    "github.com/projectdiscovery/katana/cmd/katana",           "v1.1.0"),
+]
+
+# pip tools installed straight from PyPI.
+PIP_TOOLS: list[str] = [
+    "subscraper", "bbot", "dnsgen", "waymore", "semgrep", "cloud-enum", "tavily-python",
+]
+
+GOWITNESS_VERSION = "3.0.5"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -257,6 +281,149 @@ def list_tools() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Native full install (`--all`)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _on_path(binary: str) -> bool:
+    """True if *binary* resolves on PATH or in tools/bin/ (any wrapper ext)."""
+    if shutil.which(binary):
+        return True
+    for ext in (("", ".bat", ".cmd", ".exe") if IS_WINDOWS else ("",)):
+        if (BIN_DIR / f"{binary}{ext}").exists():
+            return True
+    return False
+
+
+def _try(cmd: list[str], **kw) -> bool:
+    """Run *cmd*, returning True on success and False (with a message) on failure."""
+    try:
+        _run(cmd, **kw)
+        return True
+    except FileNotFoundError:
+        print(err(f"  [-] Not found: {cmd[0]}"))
+        return False
+    except subprocess.CalledProcessError as exc:
+        print(err(f"  [-] Failed (exit {exc.returncode}): {' '.join(cmd)}"))
+        return False
+
+
+def install_go_tools(reinstall: bool = False) -> dict[str, bool]:
+    """`go install` each pinned Go tool. Requires the Go toolchain on PATH."""
+    print()
+    print(bold("=== Go tools ==="))
+    results: dict[str, bool] = {}
+    if not shutil.which("go"):
+        print(err("  [-] Go toolchain not found — install Go, then re-run."))
+        print(dim("      https://go.dev/dl/"))
+        return {b: False for b, _, _ in GO_TOOLS}
+
+    for binary, module, version in GO_TOOLS:
+        if _on_path(binary) and not reinstall:
+            print(f"  {dim('[~]')} {binary} already present — skipping")
+            results[binary] = True
+            continue
+        print(f"  {bold('[*]')} go install {module}@{version}")
+        results[binary] = _try(["go", "install", "-v", f"{module}@{version}"])
+    print(dim("  Note: ensure your GOBIN / $(go env GOPATH)/bin is on PATH."))
+    return results
+
+
+def install_pip_tools() -> dict[str, bool]:
+    """pip-install the PyPI recon tools into the current environment."""
+    print()
+    print(bold("=== pip tools ==="))
+    cmd = [_python(), "-m", "pip", "install", "--break-system-packages", *PIP_TOOLS]
+    ok_all = _try(cmd)
+    return {name: ok_all for name in PIP_TOOLS}
+
+
+def install_npm_tools() -> dict[str, bool]:
+    """Install Prettier globally (optional JS beautifier for Stage 5)."""
+    print()
+    print(bold("=== npm tools ==="))
+    if not shutil.which("npm"):
+        print(warn("  [!] npm not found — skipping prettier (optional). Install Node.js to enable."))
+        return {"prettier": False}
+    return {"prettier": _try(["npm", "install", "-g", "prettier"])}
+
+
+def _gowitness_asset() -> str | None:
+    """Release asset name for this OS/arch, or None if unsupported."""
+    sysname = platform.system().lower()
+    machine = platform.machine().lower()
+    arch = {"x86_64": "amd64", "amd64": "amd64",
+            "aarch64": "arm64", "arm64": "arm64"}.get(machine)
+    if arch is None:
+        return None
+    if sysname == "linux":
+        return f"gowitness-{GOWITNESS_VERSION}-linux-{arch}"
+    if sysname == "darwin":
+        return f"gowitness-{GOWITNESS_VERSION}-darwin-{arch}"
+    if sysname == "windows":
+        return f"gowitness-{GOWITNESS_VERSION}-windows-{arch}.exe"
+    return None
+
+
+def install_gowitness(reinstall: bool = False) -> dict[str, bool]:
+    """Download the pinned gowitness release binary into tools/bin/."""
+    print()
+    print(bold("=== gowitness (binary) ==="))
+    if _on_path("gowitness") and not reinstall:
+        print(f"  {dim('[~]')} gowitness already present — skipping")
+        return {"gowitness": True}
+
+    asset = _gowitness_asset()
+    if not asset:
+        print(err(f"  [-] No gowitness asset for {platform.system()}/{platform.machine()}"))
+        return {"gowitness": False}
+
+    url = (f"https://github.com/sensepost/gowitness/releases/download/"
+           f"{GOWITNESS_VERSION}/{asset}")
+    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    dest = BIN_DIR / ("gowitness.exe" if IS_WINDOWS else "gowitness")
+    print(f"  {bold('[*]')} downloading {url}")
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url) as resp, open(dest, "wb") as fh:  # noqa: S310
+            shutil.copyfileobj(resp, fh)
+        if not IS_WINDOWS:
+            dest.chmod(dest.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        print(f"  {ok('[+]')} gowitness -> {dest}")
+        print(dim("  Reminder: gowitness needs Chrome/Chromium on the host for screenshots."))
+        return {"gowitness": True}
+    except Exception as exc:
+        print(err(f"  [-] gowitness download failed: {exc}"))
+        return {"gowitness": False}
+
+
+def install_all(reinstall: bool = False) -> dict[str, bool]:
+    """Full native install: Go tools, pip tools, npm, gowitness, git-clone tools."""
+    print()
+    print(bold("  AgentE — Native Full Install (--all)"))
+    print(f"  {dim('Platform: ')} {platform.system()} {platform.machine()}")
+    print(f"  {dim('Python:   ')} {_python()}")
+
+    results: dict[str, bool] = {}
+    results.update(install_go_tools(reinstall))
+    results.update(install_pip_tools())
+    results.update(install_npm_tools())
+    results.update(install_gowitness(reinstall))
+
+    # git-clone managed tools (pycroburst / linkedin2username / gitminer3)
+    print()
+    print(bold("=== git-clone tools ==="))
+    for tool in MANAGED_TOOLS:
+        results[tool["name"]] = install_tool(tool, reinstall=reinstall)
+
+    if platform.system().lower() != "linux":
+        print()
+        print(warn("  [!] massdns (puredns backend) and nuclei apt package are Linux-only."))
+        print(dim("      On non-Linux hosts, build massdns manually or use the Docker image."))
+
+    return results
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -274,21 +441,45 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             Examples:
-              python install_tools.py                   # install all
+              python install_tools.py                   # install git-clone tools only
+              python install_tools.py --all             # FULL native install (go/pip/npm/binary + git-clone)
               python install_tools.py pycroburst        # install one
               python install_tools.py l2u pcb           # install by alias
               python install_tools.py --list            # show status
               python install_tools.py --reinstall       # force re-clone all
         """),
     )
-    p.add_argument("tools",      nargs="*", help="Tool names/aliases to install (default: all)")
+    p.add_argument("tools",      nargs="*", help="Tool names/aliases to install (default: git-clone tools)")
     p.add_argument("--list",     action="store_true", help="Show status of all managed tools and exit")
     p.add_argument("--reinstall",action="store_true", help="Remove and re-clone even if already present")
+    p.add_argument("--all",      action="store_true",
+                   help="Full native install: Go tools, pip tools, npm/prettier, "
+                        "gowitness, and the git-clone tools (mirrors the Docker image)")
     args = p.parse_args()
 
     if args.list:
         list_tools()
         return 0
+
+    if args.all:
+        results = install_all(reinstall=args.reinstall)
+        print()
+        print(bold("  Summary (--all)"))
+        print("  " + "-" * 40)
+        all_ok = True
+        for name, success in results.items():
+            mark = ok("[+]") if success else err("[-]")
+            print(f"  {mark}  {name}")
+            all_ok = all_ok and success
+        print()
+        if all_ok:
+            print(ok("  Full native install complete. Verify with: "
+                     "python orchestrator.py --check-tools"))
+        else:
+            print(warn("  Some components failed — check output above. "
+                       "Run `python orchestrator.py --check-tools` to see what's missing."))
+        print()
+        return 0 if all_ok else 1
 
     targets: list[dict] = []
     if args.tools:

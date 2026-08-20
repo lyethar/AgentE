@@ -56,7 +56,9 @@ async def run_httpx(input_file: Path, outdir: Path, cfg: dict) -> ToolResult:
     """Probe live hosts over HTTP/HTTPS, output JSON."""
     out_file = outdir / "httpx.json"
     cmd = [
-        "/usr/bin/httpx",
+        # Resolve via PATH / tools/bin (ProjectDiscovery httpx), not a hard-coded
+        # path — the binary lives in different locations across host and image.
+        "httpx",
         "-l", str(input_file),
         "-o", str(out_file),
         "-json",
