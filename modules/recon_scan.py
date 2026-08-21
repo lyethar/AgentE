@@ -52,6 +52,14 @@ def _host_of(url: str) -> str:
         return url
 
 
+def _host_noport(url: str) -> str:
+    """Host of a URL, lowercased and without any port — for FQDN matching."""
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except Exception:
+        return url.lower()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Tool invocations
 # ──────────────────────────────────────────────────────────────────────────────
@@ -69,11 +77,12 @@ async def run_gowitness_scan(stage_dir: Path, cfg: dict) -> ToolResult:
     return await run_tool(cmd, "gowitness", cwd=stage_dir, timeout=cfg.get("timeout"))
 
 
-async def run_nuclei(stage_dir: Path, cfg: dict) -> ToolResult:
-    """Template-based vulnerability scan of the live URLs."""
+async def run_nuclei(stage_dir: Path, cfg: dict,
+                     input_name: str = "live-urls.txt") -> ToolResult:
+    """Template-based vulnerability scan of the given URL list (relative to cwd)."""
     cmd = [
         "nuclei",
-        "-l", "live-urls.txt",
+        "-l", input_name,
         "-o", "nuclei-results.out",
         *cfg.get("extra_args", []),
     ]
@@ -271,7 +280,17 @@ def _empty(report_file: str = "", skip_reason: str = "") -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def run_recon(domain: str, live_urls_file: Path, stage_dir: Path,
-                    reports_dir: Path, cfg: dict) -> dict:
+                    reports_dir: Path, cfg: dict,
+                    nuclei_fqdns: set[str] | None = None) -> dict:
+    """
+    Run gowitness + nuclei against the validated live URLs.
+
+    nuclei_fqdns: when None (default), nuclei scans the full live-URL list, like
+    every other tool. When a set is supplied (via --nuclei-ip-list-only), nuclei
+    is scoped to only the live URLs whose host is one of those FCrDNS-validated
+    FQDNs (derived from --ip-list); those targets are written to a separate
+    ``ip-list-live-urls.txt``. gowitness still screenshots the full list.
+    """
     log.info("=== Stage 3: Screenshots & Vulnerability Scanning (gowitness + nuclei) ===")
     recon_cfg = cfg.get("recon", {})
     report_path = reports_dir / "03-nuclei.html"
@@ -291,11 +310,32 @@ async def run_recon(domain: str, live_urls_file: Path, stage_dir: Path,
         data = _empty(str(report_path), "no live URLs")
         return data
 
+    # Decide what nuclei scans. gowitness always uses the full live-urls.txt.
+    nuclei_input = "live-urls.txt"
+    nuclei_targets = live_urls
+    if nuclei_fqdns is not None:
+        nuclei_targets = [u for u in live_urls if _host_noport(u) in nuclei_fqdns]
+        nuclei_input = "ip-list-live-urls.txt"
+        (stage_dir / nuclei_input).write_text("\n".join(nuclei_targets), encoding="utf-8")
+        log.info("Recon: nuclei scoped to --ip-list targets — %d of %d live URL(s)",
+                 len(nuclei_targets), len(live_urls))
+
+    async def _nuclei_or_skip() -> ToolResult:
+        if not nuclei_targets:
+            log.warning("Recon: no nuclei targets after --ip-list filtering — skipping nuclei")
+            return ToolResult(
+                tool="nuclei", cmd=[], returncode=0, stdout="", stderr="",
+                duration=0.0, skipped=True,
+                skip_reason="no live URLs matched --ip-list targets",
+            )
+        return await run_nuclei(stage_dir, recon_cfg.get("nuclei", {}),
+                                input_name=nuclei_input)
+
     # gowitness scan and nuclei are independent — run them together. Neither is
     # killed early (no timeout unless configured).
     gw_result, nuclei_result = await run_parallel(
         run_gowitness_scan(stage_dir, recon_cfg.get("gowitness", {})),
-        run_nuclei(stage_dir, recon_cfg.get("nuclei", {})),
+        _nuclei_or_skip(),
         max_concurrency=2,
     )
 

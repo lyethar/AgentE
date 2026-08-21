@@ -190,6 +190,11 @@ python orchestrator.py -d example.com -c "Acme Corp"
 # Resolve & validate a file of IPs/CIDRs (reverse DNS + FCrDNS), feeding FQDNs in
 python orchestrator.py -d example.com --ip-list targets_ips.txt
 
+# Scope Nuclei to just the --ip-list targets (they still get reverse-resolved,
+# HTTPX-validated, and added to the full live-URL list every other tool scans;
+# only Nuclei is restricted, using a separate ip-list-live-urls.txt)
+python orchestrator.py -d example.com --ip-list targets_ips.txt --nuclei-ip-list-only
+
 # Run specific stages only
 #   1=subs 2=validate 3=recon(gowitness+nuclei) 4=crawl 5=collect
 #   6=jsanalysis 7=cloud 8=email 9=exposure 10=report

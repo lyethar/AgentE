@@ -170,6 +170,11 @@ def parse_args() -> argparse.Namespace:
                    help="Comma-separated stages: 1=subs,2=validate,3=recon(gowitness+nuclei),"
                         "4=crawl,5=collect,6=jsanalysis,7=cloud,8=email,9=exposure,10=report")
     p.add_argument("-o", "--output",      default="",  help="Override output directory")
+    p.add_argument("--nuclei-ip-list-only", action="store_true",
+                   help="Run Nuclei only against the live URLs derived from --ip-list "
+                        "targets (they are still reverse-resolved, HTTPX-validated, and "
+                        "added to the full live-URL list that every other tool scans). "
+                        "Requires --ip-list.")
     p.add_argument("-v", "--verbose",     action="store_true")
     p.add_argument("--skip-missing",      action="store_true",
                    help="Continue even when required tools are not installed")
@@ -288,7 +293,13 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
     # ── Stage 3: Screenshots & Vuln Scan — gowitness + nuclei (depends on Stage 2) ──
     if 3 in stages:
         urls_file = Path(val_data.get("urls_file", ""))
-        recon_data = await run_recon(domain, urls_file, dirs["recon"], reports, cfg)
+        # With --nuclei-ip-list-only, scope nuclei to the FCrDNS-validated FQDNs
+        # that came from --ip-list; gowitness + all other tools still use the
+        # full live-URL list.
+        nuclei_fqdns = (set(ip_data.get("validated_fqdns", []))
+                        if args.nuclei_ip_list_only else None)
+        recon_data = await run_recon(domain, urls_file, dirs["recon"], reports, cfg,
+                                     nuclei_fqdns=nuclei_fqdns)
 
     # ── Stage 4: Crawl / JS Enumeration — gospider, katana, waymore (depends on Stage 2) ──
     if 4 in stages:
@@ -442,6 +453,11 @@ def main():
 
     if not args.domain:
         print("  Error: -d/--domain is required to run a scan.\n")
+        sys.exit(2)
+
+    if args.nuclei_ip_list_only and not args.ip_list:
+        print("  Error: --nuclei-ip-list-only requires --ip-list "
+              "(there would be no IP-derived targets for Nuclei to scan).\n")
         sys.exit(2)
 
     # Build the run directory + per-stage layout only once we're actually scanning.
