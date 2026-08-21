@@ -174,7 +174,8 @@ def parse_args() -> argparse.Namespace:
                    help="Run Nuclei only against the live URLs derived from --ip-list "
                         "targets (they are still reverse-resolved, HTTPX-validated, and "
                         "added to the full live-URL list that every other tool scans). "
-                        "Requires --ip-list.")
+                        "IPs with no resolvable domain name are HTTPX-probed directly "
+                        "and included in the Nuclei scope. Requires --ip-list.")
     p.add_argument("-v", "--verbose",     action="store_true")
     p.add_argument("--skip-missing",      action="store_true",
                    help="Continue even when required tools are not installed")
@@ -243,7 +244,8 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
     cloud_data = {"assets": {}, "total": 0, "tool_results": []}
     email_data = {"emails": [], "usernames": [], "tool_results": []}
     ip_data    = {"results": [], "errors": [], "total_ips": 0, "resolved": 0,
-                  "fqdns": [], "validated_fqdns": [], "tool_results": []}
+                  "fqdns": [], "validated_fqdns": [], "unvalidated_ips": [],
+                  "tool_results": []}
     exposure_data = {"leakix": {"results": [], "count": 0},
                      "gitminer": {"findings": [], "count": 0},
                      "google_dorks": {"findings": [], "count": 0, "dorks_total": 0},
@@ -282,24 +284,33 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
         log.info("Merged %d IP-derived FQDN(s) into the subdomain pool", added)
 
     # ── Stage 2: Validation (depends on Stage 1) ──
+    # With --nuclei-ip-list-only, probe --ip-list IPs that produced no FCrDNS-
+    # validated FQDN directly with httpx, so non-resolvable IPs still become live
+    # URLs (and are handed to nuclei via the ip-list scope in Stage 3).
+    ip_probe_targets = (ip_data.get("unvalidated_ips", [])
+                        if args.nuclei_ip_list_only else [])
     if 2 in stages:
         subs_file = Path(sub_data.get("merged_file", ""))
         if not subs_file.exists():
             # create a placeholder so puredns/httpx still run with empty input
             subs_file = dirs["subdomains"] / "subdomains_all.txt"
             subs_file.write_text("", encoding="utf-8")
-        val_data = await validate_subdomains(subs_file, dirs["validation"], cfg)
+        val_data = await validate_subdomains(subs_file, dirs["validation"], cfg,
+                                             extra_targets=ip_probe_targets)
 
     # ── Stage 3: Screenshots & Vuln Scan — gowitness + nuclei (depends on Stage 2) ──
     if 3 in stages:
         urls_file = Path(val_data.get("urls_file", ""))
-        # With --nuclei-ip-list-only, scope nuclei to the FCrDNS-validated FQDNs
-        # that came from --ip-list; gowitness + all other tools still use the
-        # full live-URL list.
-        nuclei_fqdns = (set(ip_data.get("validated_fqdns", []))
-                        if args.nuclei_ip_list_only else None)
+        # With --nuclei-ip-list-only, scope nuclei to the --ip-list targets:
+        # the FCrDNS-validated FQDNs *and* the raw IPs that had no resolvable
+        # domain name (probed directly in Stage 2). gowitness + all other tools
+        # still use the full live-URL list.
+        nuclei_scope = None
+        if args.nuclei_ip_list_only:
+            nuclei_scope = (set(ip_data.get("validated_fqdns", []))
+                            | set(ip_data.get("unvalidated_ips", [])))
         recon_data = await run_recon(domain, urls_file, dirs["recon"], reports, cfg,
-                                     nuclei_fqdns=nuclei_fqdns)
+                                     nuclei_fqdns=nuclei_scope)
 
     # ── Stage 4: Crawl / JS Enumeration — gospider, katana, waymore (depends on Stage 2) ──
     if 4 in stages:

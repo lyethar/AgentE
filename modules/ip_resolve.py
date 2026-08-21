@@ -32,7 +32,7 @@ def _empty(errors: list[str] | None = None) -> dict:
     return {
         "results": [], "errors": errors or [],
         "total_ips": 0, "resolved": 0,
-        "fqdns": [], "validated_fqdns": [],
+        "fqdns": [], "validated_fqdns": [], "unvalidated_ips": [],
         "tool_results": [{"tool": "ip-fqdn-resolver", "duration": 0.0,
                           "skipped": True, "skip_reason": "no IPs to resolve"}],
     }
@@ -181,6 +181,11 @@ async def resolve_ips(ip_file: Path, outdir: Path, cfg: dict) -> dict:
     validated_fqdns = sorted({f for r in results for f in r.get("validated_fqdns", [])})
     resolved = sum(1 for r in results if r.get("fqdns"))
 
+    # IPs that produced no FCrDNS-validated FQDN (no PTR, or PTR that failed
+    # forward-confirmation). These never enter the subdomain pool, so they are
+    # exposed separately for callers that want to scan the raw IPs directly.
+    unvalidated_ips = [r["ip"] for r in results if not r.get("validated_fqdns")]
+
     (outdir / "ip_resolution.json").write_text(
         json.dumps({"results": results, "errors": errors}, indent=2), encoding="utf-8"
     )
@@ -197,6 +202,7 @@ async def resolve_ips(ip_file: Path, outdir: Path, cfg: dict) -> dict:
         "resolved": resolved,
         "fqdns": all_fqdns,
         "validated_fqdns": validated_fqdns,
+        "unvalidated_ips": unvalidated_ips,
         "tool_results": [{"tool": "ip-fqdn-resolver", "duration": 0.0,
                           "skipped": False, "skip_reason": ""}],
     }

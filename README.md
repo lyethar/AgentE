@@ -192,7 +192,9 @@ python orchestrator.py -d example.com --ip-list targets_ips.txt
 
 # Scope Nuclei to just the --ip-list targets (they still get reverse-resolved,
 # HTTPX-validated, and added to the full live-URL list every other tool scans;
-# only Nuclei is restricted, using a separate ip-list-live-urls.txt)
+# only Nuclei is restricted, using a separate ip-list-live-urls.txt). IPs with
+# no resolvable domain name are HTTPX-probed directly and included in the Nuclei
+# scope, so non-resolvable IPs are still scanned.
 python orchestrator.py -d example.com --ip-list targets_ips.txt --nuclei-ip-list-only
 
 # Run specific stages only

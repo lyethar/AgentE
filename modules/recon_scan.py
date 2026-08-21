@@ -287,9 +287,10 @@ async def run_recon(domain: str, live_urls_file: Path, stage_dir: Path,
 
     nuclei_fqdns: when None (default), nuclei scans the full live-URL list, like
     every other tool. When a set is supplied (via --nuclei-ip-list-only), nuclei
-    is scoped to only the live URLs whose host is one of those FCrDNS-validated
-    FQDNs (derived from --ip-list); those targets are written to a separate
-    ``ip-list-live-urls.txt``. gowitness still screenshots the full list.
+    is scoped to only the live URLs whose host is one of those --ip-list-derived
+    targets — the FCrDNS-validated FQDNs and/or the raw IPs that had no resolvable
+    domain name; those targets are written to a separate ``ip-list-live-urls.txt``.
+    gowitness still screenshots the full list.
     """
     log.info("=== Stage 3: Screenshots & Vulnerability Scanning (gowitness + nuclei) ===")
     recon_cfg = cfg.get("recon", {})

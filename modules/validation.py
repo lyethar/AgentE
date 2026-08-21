@@ -98,7 +98,14 @@ async def validate_subdomains(
     subdomains_file: Path,
     outdir: Path,
     cfg: dict,
+    extra_targets: list[str] | None = None,
 ) -> dict:
+    """
+    extra_targets: raw hosts/IPs to probe with httpx *directly*, in addition to
+    the DNS-resolved subdomains. These bypass dnsgen/puredns (they need no name
+    resolution) and are used to probe --ip-list IPs that have no resolvable
+    domain name, so non-resolvable IPs still get HTTP-probed and scanned.
+    """
     log.info("=== Stage 2: Subdomain Validation ===")
     val_cfg = cfg.get("validation", {})
 
@@ -121,8 +128,19 @@ async def validate_subdomains(
     resolved = [s.strip() for s in resolved_file.read_text(errors="replace").splitlines() if s.strip()]
     log.info("puredns resolved %d live subdomains", len(resolved))
 
-    # Step 3: httpx probe
-    httpx_result = await run_httpx(resolved_file, outdir, val_cfg.get("httpx", {}))
+    # Step 3: httpx probe. Optionally fold in extra raw targets (e.g. non-
+    # resolvable --ip-list IPs) so they are probed directly alongside the
+    # DNS-resolved hosts.
+    httpx_input = resolved_file
+    extras = [t.strip() for t in (extra_targets or []) if t.strip()]
+    if extras:
+        combined = list(dict.fromkeys(resolved + extras))  # dedupe, keep order
+        httpx_input = outdir / "httpx_targets.txt"
+        httpx_input.write_text("\n".join(combined), encoding="utf-8")
+        log.info("httpx: probing %d resolved host(s) + %d extra target(s)",
+                 len(resolved), len(extras))
+
+    httpx_result = await run_httpx(httpx_input, outdir, val_cfg.get("httpx", {}))
     hosts = _parse_httpx_json(outdir)
     live_urls = _extract_urls_from_httpx(hosts)
 
