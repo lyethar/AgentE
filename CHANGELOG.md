@@ -4,6 +4,19 @@ All notable changes to AgentE are documented here.
 
 ## [Unreleased]
 
+### Added — `--url-list` to run stages 3-6 without stages 1-2
+- New `-u/--url-list <file>` flag: a pre-supplied list of live URLs (one per
+  line; blank lines and `#` comments ignored) that seeds the downstream chain
+  when stage 2 (validation) is not in `--stages`. Stage 3 (recon) and stage 4
+  (crawl) read the URLs directly; stages 5-6 chain off them.
+- Orchestrator now **errors out** if `--stages` selects any of stages 3-6
+  without stage 2 and no `--url-list` is given — those stages otherwise have no
+  live URLs to run against. If `--url-list` is passed alongside stage 2 it is
+  ignored (validation generates the URLs) with a note.
+- New `seed_live_urls()` in `modules/validation.py` builds the `val_data`
+  structure from the URL file and writes `02-validation/live_urls.txt`, so every
+  downstream stage reads it exactly as it would read stage 2's own output.
+
 ### Added — Stage 6 secrets scanning (JavaScript Analysis, branch i)
 - New `modules/secrets_scan.py`: scans the downloaded assets (Stage 5) with a
   large regex catalog ported from the "JS Analyzer" Burp extension — high-value

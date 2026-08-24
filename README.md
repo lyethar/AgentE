@@ -201,9 +201,16 @@ python orchestrator.py -d example.com --ip-list targets_ips.txt --nuclei-ip-list
 #   1=subs 2=validate 3=recon(gowitness+nuclei) 4=crawl 5=collect
 #   6=jsanalysis 7=cloud 8=email 9=exposure 10=report
 python orchestrator.py -d example.com --stages 1,2
-python orchestrator.py -d example.com --stages 4,5,10     # crawl, download JS, report
+python orchestrator.py -d example.com --stages 2,3,4,5,10   # validate, recon, crawl, collect, report
 python orchestrator.py -d example.com --stages 2,3        # validate + screenshots/nuclei
 python orchestrator.py -d example.com -c "Acme Corp" --stages 9,10   # exposure OSINT + report
+
+# Run stages 3-6 stand-alone against a pre-supplied URL list (skips stages 1-2).
+# Stages 3 (recon) and 4 (crawl) read these URLs directly; 5-6 chain off them.
+# One URL per line; blank lines and '#' comments are ignored.
+#   Required whenever --stages selects any of 3-6 without stage 2 — otherwise
+#   those stages have no live URLs to run against and the tool exits with an error.
+python orchestrator.py -d example.com --stages 3,4,5,6 --url-list live_urls.txt
 
 # Check which tools are installed before running
 python orchestrator.py -d example.com --check-tools

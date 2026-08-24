@@ -36,7 +36,7 @@ from modules.recon_scan  import run_recon
 from modules.reporting  import generate_report
 from modules.secrets_scan import scan_secrets
 from modules.subdomains import enumerate_subdomains
-from modules.validation import validate_subdomains
+from modules.validation import seed_live_urls, validate_subdomains
 from utils.layout       import build_layout
 from utils.logger       import setup_logger
 from utils.runner       import progress_monitor
@@ -53,6 +53,12 @@ BANNER = r"""
 """
 
 ALL_STAGES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+# Stages that consume the live-URL list produced by stage 2 (validation).
+# Stage 3 (recon) and stage 4 (crawl) read the URLs directly; stages 5-6 chain
+# off stage 4's output. When stage 2 is not selected, these stages have no
+# upstream source of live URLs and must be seeded with --url-list.
+URL_DEPENDENT_STAGES = {3, 4, 5, 6}
 
 # Maps each tool binary to the stage that uses it and an install hint.
 # Stage 5 (asset collection) uses the bundled 'requests' library plus an
@@ -165,6 +171,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-c", "--company",  default="",     help="Company name for LinkedIn enumeration")
     p.add_argument("-i", "--ip-list",  default="",
                    help="Optional file of IPs/CIDRs to reverse-resolve and validate (FQDN/FCrDNS)")
+    p.add_argument("-u", "--url-list", default="",
+                   help="File of live URLs (one per line) to seed stages 3-6 when "
+                        "stage 2 (validation) is not run. Required if --stages selects "
+                        "any of stages 3-6 without stage 2.")
     p.add_argument("--config",         default="config.yaml", help="Path to config.yaml")
     p.add_argument("--stages",         default="1,2,3,4,5,6,7,8,9,10",
                    help="Comma-separated stages: 1=subs,2=validate,3=recon(gowitness+nuclei),"
@@ -297,6 +307,12 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
             subs_file.write_text("", encoding="utf-8")
         val_data = await validate_subdomains(subs_file, dirs["validation"], cfg,
                                              extra_targets=ip_probe_targets)
+
+    # ── Seed live URLs from --url-list when stage 2 is skipped ──
+    # Lets stages 3-6 run stand-alone against a pre-supplied URL list (the
+    # CLI has already enforced that --url-list is present in this case).
+    elif args.url_list and (URL_DEPENDENT_STAGES & stages):
+        val_data = seed_live_urls(Path(args.url_list), dirs["validation"])
 
     # ── Stage 3: Screenshots & Vuln Scan — gowitness + nuclei (depends on Stage 2) ──
     if 3 in stages:
@@ -470,6 +486,25 @@ def main():
         print("  Error: --nuclei-ip-list-only requires --ip-list "
               "(there would be no IP-derived targets for Nuclei to scan).\n")
         sys.exit(2)
+
+    # Stages 3-6 depend on the live-URL list that stage 2 (validation) produces.
+    # If any of them is selected without stage 2, the user must supply the URLs
+    # directly via --url-list, or those stages would have nothing to run against.
+    if (URL_DEPENDENT_STAGES & stages) and 2 not in stages:
+        selected = sorted(URL_DEPENDENT_STAGES & stages)
+        if not args.url_list:
+            print(f"  Error: stage(s) {', '.join(map(str, selected))} depend on the live "
+                  "URLs produced by stage 2 (validation),\n"
+                  "  which is not in --stages. Supply the URLs directly with "
+                  "--url-list <file>\n"
+                  "  (one URL per line), or add stage 2 to --stages.\n")
+            sys.exit(2)
+        if not Path(args.url_list).is_file():
+            print(f"  Error: --url-list file not found: {args.url_list}\n")
+            sys.exit(2)
+    elif args.url_list and 2 in stages:
+        print("  Note: --url-list is ignored because stage 2 (validation) is "
+              "selected and will generate the live URLs.\n")
 
     # Build the run directory + per-stage layout only once we're actually scanning.
     outdir = prepare_output_dir(args.domain, cfg, args.output)

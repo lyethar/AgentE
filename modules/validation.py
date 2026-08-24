@@ -94,6 +94,44 @@ def _extract_urls_from_httpx(hosts: list[dict]) -> list[str]:
     return [h.get("url", "") for h in hosts if h.get("url")]
 
 
+def seed_live_urls(url_list_file: Path, outdir: Path) -> dict:
+    """
+    Build a val_data-shaped dict from a user-supplied list of live URLs,
+    bypassing stages 1-2. Used with --url-list so the downstream chain
+    (stage 3 recon -> 4 crawl -> 5 collect -> 6 jsanalysis) can run stand-alone.
+
+    One URL per line; blank lines and '#' comments are ignored. The list is
+    normalised (deduped, order preserved) and written to live_urls.txt in the
+    validation dir so every downstream stage reads it exactly as it would read
+    stage 2's own output.
+    """
+    live_urls: list[str] = []
+    for line in url_list_file.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        live_urls.append(line)
+    live_urls = list(dict.fromkeys(live_urls))  # dedupe, keep order
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    urls_file = outdir / "live_urls.txt"
+    urls_file.write_text("\n".join(live_urls), encoding="utf-8")
+
+    log.info("Seeded %d live URL(s) from %s (stages 1-2 skipped)",
+             len(live_urls), url_list_file)
+
+    return {
+        "resolved_subdomains": [],
+        # Minimal host records so the run summary can still count live hosts;
+        # a raw URL list carries no httpx metadata (status, title, tech).
+        "live_hosts": [{"url": u} for u in live_urls],
+        "live_urls": live_urls,
+        "urls_file": str(urls_file),
+        "resolved_file": "",
+        "tool_results": [],
+    }
+
+
 async def validate_subdomains(
     subdomains_file: Path,
     outdir: Path,
