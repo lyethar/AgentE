@@ -74,7 +74,7 @@ recon:
 # Stage 4: Crawl — JS & Endpoint Enumeration (gospider, katana, waymore)
 js_enum:
   gospider:
-    timeout: 600
+    timeout: 0
     threads: 10
     depth: 3
     concurrent: 5
@@ -82,7 +82,7 @@ js_enum:
     extra_args: []
 
   katana:
-    timeout: 600
+    timeout: 0
     depth: 3
     concurrency: 10
     timeout_per_req: 15
