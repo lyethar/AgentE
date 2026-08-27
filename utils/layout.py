@@ -11,12 +11,13 @@ so each tool's artefacts live in their own folder, all HTML reports collect
 under ``reports/`` and logs collect under ``logs/``:
 
     output/<domain>/<timestamp>/
-      logs/                 agente.log
-      reports/              index.html + one HTML report per stage
+      logs/                 agente.log, commands.log, tools/<per-command logs>
+      reports/              index.html + one HTML report per stage,
+                            plus findings.md + LLM_PROMPT.md
       00-ip-resolve/        optional IP -> FQDN pre-step
       01-subdomains/        subfinder / subscraper / bbot
       02-validation/        dnsgen / puredns / httpx  (live_urls.txt)
-      03-screenshots/       gowitness screenshots + nuclei results
+      03-screenshots/       nmap (--ip-list scope) + gowitness screenshots + nuclei
       04-crawl/             gospider / katana / waymore
       05-assets/            downloaded JS/JSON/config (collected/)
       06-js-analysis/       semgrep raw output

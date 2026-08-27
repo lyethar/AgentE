@@ -32,6 +32,7 @@ from modules.exposure    import enumerate_exposure
 from modules.ip_resolve  import resolve_ips
 from modules.js_analysis import analyze_js
 from modules.js_enum     import enumerate_js
+from modules.md_report   import generate_markdown
 from modules.recon_scan  import run_recon
 from modules.reporting  import generate_report
 from modules.secrets_scan import scan_secrets
@@ -39,7 +40,7 @@ from modules.subdomains import enumerate_subdomains
 from modules.validation import seed_live_urls, validate_subdomains
 from utils.layout       import build_layout
 from utils.logger       import setup_logger
-from utils.runner       import progress_monitor
+from utils.runner       import progress_monitor, set_tool_log_dir
 
 BANNER = r"""
   ___                    _   _____
@@ -71,6 +72,7 @@ TOOL_MANIFEST: list[dict] = [
     {"stage": 2, "bin": "dnsgen",           "hint": "pip install dnsgen"},
     {"stage": 2, "bin": "puredns",          "hint": "go install github.com/d3mondev/puredns/v2@latest"},
     {"stage": 2, "bin": "httpx",            "hint": "go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest"},
+    {"stage": 3, "bin": "nmap",             "hint": "sudo apt install nmap  OR  https://nmap.org/download  (only used with --ip-list)"},
     {"stage": 3, "bin": "gowitness",        "hint": "Download a release binary: https://github.com/sensepost/gowitness/releases"},
     {"stage": 3, "bin": "nuclei",           "hint": "sudo apt install nuclei  OR  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"},
     {"stage": 4, "bin": "gospider",         "hint": "go install github.com/jaeles-project/gospider@latest"},
@@ -325,8 +327,13 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
         if args.nuclei_ip_list_only:
             nuclei_scope = (set(ip_data.get("validated_fqdns", []))
                             | set(ip_data.get("unvalidated_ips", [])))
+        # Nmap scans ONLY the in-scope hosts supplied via --ip-list. Every parsed
+        # IP (resolvable or not) is a target; without --ip-list, nmap is skipped.
+        nmap_targets = ([r["ip"] for r in ip_data.get("results", []) if r.get("ip")]
+                        if args.ip_list else [])
         recon_data = await run_recon(domain, urls_file, dirs["recon"], reports, cfg,
-                                     nuclei_fqdns=nuclei_scope)
+                                     nuclei_fqdns=nuclei_scope,
+                                     nmap_targets=nmap_targets)
 
     # ── Stage 4: Crawl / JS Enumeration — gospider, katana, waymore (depends on Stage 2) ──
     if 4 in stages:
@@ -362,7 +369,7 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
     if 9 in stages:
         exposure_data = await enumerate_exposure(domain, company, dirs["exposure"], cfg)
 
-    # ── Stage 10: Report ──
+    # ── Stage 10: Report (HTML + Markdown) ──
     if 10 in stages:
         report_path = generate_report(
             domain, reports, sub_data, val_data, js_data,
@@ -370,6 +377,15 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
             recon_data, secrets_data,
         )
         log.info("HTML report: file://%s", report_path.resolve())
+
+        # Markdown findings + an LLM analysis prompt (for further-testing suggestions).
+        md_path = generate_markdown(
+            domain, dirs, sub_data, val_data, js_data, collect_data, cloud_data,
+            email_data, exposure_data, ip_data, jsa_data, recon_data, secrets_data,
+            meta={"stages": args.stages, "company": company,
+                  "ip_list": bool(args.ip_list)},
+        )
+        log.info("Markdown report: file://%s", md_path.resolve())
 
     # Stop the progress heartbeat now that all stages are done.
     monitor_task.cancel()
@@ -391,6 +407,11 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
     print(f"  Subdomains  : {len(sub_data['all'])}")
     print(f"  Live hosts  : {len(val_data['live_hosts'])}")
     print(f"  Screenshots : {recon_data['screenshots']}")
+    _nmap = recon_data.get("nmap", {}) or {}
+    if args.ip_list and _nmap.get("enabled"):
+        print(f"  Open ports  : {_nmap.get('open_ports_total', 0)} "
+              f"across {len([h for h in _nmap.get('hosts', []) if h.get('ports')])} host(s) "
+              f"({_nmap.get('hosts_scanned', 0)} scanned)")
     print(f"  Nuclei      : {recon_data['counts'].get('total', 0)} findings "
           f"(crit={recon_data['counts'].get('critical', 0)} "
           f"high={recon_data['counts'].get('high', 0)})")
@@ -426,6 +447,8 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
             "subdomains":     len(sub_data["all"]),
             "live_hosts":     len(val_data["live_hosts"]),
             "screenshots":    recon_data["screenshots"],
+            "nmap_open_ports": (recon_data.get("nmap", {}) or {}).get("open_ports_total", 0),
+            "nmap_hosts_scanned": (recon_data.get("nmap", {}) or {}).get("hosts_scanned", 0),
             "nuclei_findings": recon_data["counts"].get("total", 0),
             "nuclei_critical": recon_data["counts"].get("critical", 0),
             "nuclei_high":     recon_data["counts"].get("high", 0),
@@ -510,6 +533,9 @@ def main():
     outdir = prepare_output_dir(args.domain, cfg, args.output)
     dirs   = build_layout(outdir)
     log    = setup_logger("agente", dirs["logs"], verbose=args.verbose)
+    # Route per-tool execution logging (commands.log + logs/tools/*.log) into
+    # this run's logs directory so every command run is captured verbatim.
+    set_tool_log_dir(dirs["logs"])
 
     log.info("AgentE starting | target=%s | stages=%s", args.domain, args.stages)
 

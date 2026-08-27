@@ -2,10 +2,12 @@ import asyncio
 import itertools
 import logging
 import platform
+import re
 import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger("agente.runner")
@@ -13,6 +15,83 @@ log = logging.getLogger("agente.runner")
 # Local tools/bin/ directory created by install_tools.py — checked before system PATH
 _LOCAL_BIN = Path(__file__).parent.parent / "tools" / "bin"
 _IS_WINDOWS = platform.system() == "Windows"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Verbose per-tool execution logging
+# Every external command AgentE runs is recorded so users can see exactly what
+# ran, when, for how long, and with what output — and screenshot it for a report.
+#   logs/commands.log        one chronological line per invocation (an index)
+#   logs/tools/NNN_<tool>.log full detail: command, timestamps, rc, stdout/stderr
+# The directory is configured once at startup via set_tool_log_dir().
+# ──────────────────────────────────────────────────────────────────────────────
+_TOOL_LOG_DIR: Path | None = None
+_log_counter = itertools.count(1)
+
+
+def set_tool_log_dir(path: Path | None) -> None:
+    """Point per-tool execution logging at *path* (the run's logs/ dir)."""
+    global _TOOL_LOG_DIR
+    _TOOL_LOG_DIR = Path(path) if path else None
+    if _TOOL_LOG_DIR:
+        (_TOOL_LOG_DIR / "tools").mkdir(parents=True, exist_ok=True)
+
+
+def _sanitize(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "tool"
+
+
+def _record_invocation(result: "ToolResult", cwd: Path | None,
+                       started: datetime, finished: datetime, mode: str) -> None:
+    """
+    Persist one command invocation to the logs directory: a full per-tool detail
+    file plus a one-line entry in the chronological commands index. Never raises
+    — logging must never break a scan.
+    """
+    if not _TOOL_LOG_DIR:
+        return
+    try:
+        seq = next(_log_counter)
+        cmd_str = " ".join(str(c) for c in result.cmd) if result.cmd else "(no command)"
+        status = ("skipped" if result.skipped
+                  else "success" if result.success else f"exit {result.returncode}")
+        detail_name = f"{seq:04d}_{_sanitize(result.tool)}.log"
+        detail_path = _TOOL_LOG_DIR / "tools" / detail_name
+
+        lines = [
+            "=" * 78,
+            f"Tool        : {result.tool}",
+            f"Command     : {cmd_str}",
+            f"Working dir : {cwd if cwd else Path.cwd()}",
+            f"Mode        : {mode}",
+            f"Started     : {started.isoformat(timespec='seconds')}",
+            f"Finished    : {finished.isoformat(timespec='seconds')}",
+            f"Duration    : {result.duration:.1f}s",
+            f"Return code : {result.returncode}",
+            f"Status      : {status}",
+        ]
+        if result.skip_reason:
+            lines.append(f"Skip reason : {result.skip_reason}")
+        lines.append("=" * 78)
+        lines.append("")
+        lines.append("----- STDOUT -----")
+        lines.append(result.stdout if result.stdout else "(none captured)")
+        lines.append("")
+        lines.append("----- STDERR -----")
+        lines.append(result.stderr if result.stderr else "(none captured)")
+        lines.append("")
+        detail_path.write_text("\n".join(lines), encoding="utf-8")
+
+        cwd_label = Path(cwd).name if cwd else ""
+        index_line = (
+            f"{started.isoformat(timespec='seconds')}  "
+            f"{result.tool:<18} rc={result.returncode:<4} "
+            f"{result.duration:6.1f}s  {status:<10} "
+            f"cwd={cwd_label:<16} ::  {cmd_str}  ->  tools/{detail_name}\n"
+        )
+        with open(_TOOL_LOG_DIR / "commands.log", "a", encoding="utf-8") as fh:
+            fh.write(index_line)
+    except Exception as exc:  # pragma: no cover - logging must not break a scan
+        log.debug("Could not record invocation for %s: %s", result.tool, exc)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-tool progress tracking
@@ -124,23 +203,28 @@ async def run_tool(
     resolved = resolve_tool(cmd[0])
     if resolved is None:
         log.warning("Tool not found: %s — skipping", cmd[0])
-        return ToolResult(
+        now = datetime.now()
+        result = ToolResult(
             tool=tool_name, cmd=cmd, returncode=-1,
             stdout="", stderr="",
             duration=0.0, skipped=True,
             skip_reason=f"'{cmd[0]}' not found in PATH or tools/bin/",
         )
+        _record_invocation(result, cwd, now, now, "not found")
+        return result
 
     use_timeout = timeout is not None and timeout > 0
 
     # Swap bare name for resolved path so the subprocess exec is unambiguous
     resolved_cmd = [resolved, *cmd[1:]]
     start = time.monotonic()
+    started_dt = datetime.now()
     token = _register_tool(tool_name)
     mode = ("interactive, no timeout" if interactive and not use_timeout
             else "interactive" if interactive
             else f"timeout {timeout}s" if use_timeout else "no timeout")
-    log.info("[%s] Started (%s)", tool_name, mode)
+    # Echo the full command into agente.log so the main log shows exactly what ran.
+    log.info("[%s] Started (%s): %s", tool_name, mode, " ".join(str(c) for c in cmd))
     proc = None
     try:
         if interactive:
@@ -189,6 +273,7 @@ async def run_tool(
             log.info("[%s] Finished in %.1fs", tool_name, duration)
         else:
             log.warning("[%s] Exited %d in %.1fs", tool_name, proc.returncode, duration)
+        _record_invocation(result, cwd, started_dt, datetime.now(), mode)
         return result
     except asyncio.TimeoutError:
         log.error("[%s] Timed out after %ds — killing process", tool_name, timeout)
@@ -199,19 +284,23 @@ async def run_tool(
                 await proc.communicate()
             except Exception:
                 pass
-        return ToolResult(
+        result = ToolResult(
             tool=tool_name, cmd=cmd, returncode=-2,
             stdout="", stderr="Timed out",
             duration=time.monotonic() - start, skipped=True,
             skip_reason=f"Timeout after {timeout}s",
         )
+        _record_invocation(result, cwd, started_dt, datetime.now(), mode)
+        return result
     except Exception as exc:
         log.error("[%s] Unexpected error: %s", tool_name, exc)
-        return ToolResult(
+        result = ToolResult(
             tool=tool_name, cmd=cmd, returncode=-3,
             stdout="", stderr=str(exc),
             duration=time.monotonic() - start,
         )
+        _record_invocation(result, cwd, started_dt, datetime.now(), mode)
+        return result
     finally:
         _deregister_tool(token)
 

@@ -46,6 +46,19 @@ validation:
 # Runs against the live URLs from Stage 2. Both scans use timeout 0 (no limit)
 # so they are never killed before finishing.
 recon:
+  # Nmap port scan — runs BEFORE nuclei and ONLY against the in-scope hosts
+  # supplied via --ip-list. Two phases: a fast Top-N sweep, then a targeted
+  # service (-sV) + default-script (-sC) scan of just the open ports found.
+  nmap:
+    enabled: true
+    top_ports: 1000       # phase 1: fast scan of the top N TCP ports
+    service_scan: true     # phase 2: -sV service/version detection on open ports
+    script_scan: true      # add -sC (default NSE scripts) to the service scan
+    timeout: 0             # no timeout — never killed before finishing
+    max_concurrency: 5     # parallel per-host service scans
+    extra_args: []         # extra flags for the fast scan (e.g. ["-p-"] for all ports)
+    service_extra_args: [] # extra flags for the targeted service scan
+
   gowitness:
     timeout: 0             # no timeout — screenshotting many hosts can run long
     report_server: true    # after scanning, launch `gowitness report server` (detached, never killed)

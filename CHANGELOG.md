@@ -4,6 +4,38 @@ All notable changes to AgentE are documented here.
 
 ## [Unreleased]
 
+### Added — Verbose per-command logging
+- Every external command AgentE runs is now captured under `logs/`:
+  - `logs/commands.log` — a chronological index (timestamp, tool, return code,
+    duration, status, working dir, full command, pointer to the detail file);
+    skipped/missing tools are recorded too.
+  - `logs/tools/NNNN_<tool>.log` — per-invocation detail: exact command,
+    start/finish timestamps, duration, return code, and full stdout/stderr.
+- `agente.log` `Started` lines now echo the full command line, so the main log
+  shows exactly what ran.
+- New `set_tool_log_dir()` in `utils/runner.py`; the orchestrator points it at the
+  run's `logs/` dir at startup. Logging never breaks a scan (failures are swallowed).
+
+### Added — Nmap port scanning in Stage 3 (`--ip-list` scope)
+- New `modules/port_scan.py`: an Nmap integration that runs **only** against the
+  in-scope hosts supplied via `--ip-list`, and **before** the Nuclei scan. Two
+  phases: a fast Top-N sweep (`nmap -Pn -T4 -iL … --open -v --top-ports N`), then
+  a targeted service + default-script scan (`-sV -sC -p <open-ports>`) per host.
+- Results feed the Stage 3 report (new Nmap section + "Open Ports" card in
+  `reports/03-nuclei.html`), the console summary, `summary.json`
+  (`nmap_open_ports`, `nmap_hosts_scanned`), and the Markdown report.
+- Raw output written to `03-screenshots/nmap_fast.xml/.txt` and
+  `nmap_service_<ip>.xml/.txt`. New `recon.nmap` config block; `nmap` added to the
+  Stage 3 tool pre-flight manifest (only used with `--ip-list`).
+
+### Added — Markdown reports + LLM analysis prompt
+- New `modules/md_report.py`: Stage 10 now also writes `reports/findings.md`
+  (all findings as Markdown — summary, Nmap, nuclei by severity, hosts, subdomains,
+  endpoints, secrets, cloud, emails, exposures) and `reports/LLM_PROMPT.md`.
+- `LLM_PROMPT.md` maps the run's folder layout, lists the tools that ran, and
+  enumerates the key output files that actually exist for the run, then asks an
+  LLM to propose prioritised additional manual testing grounded in the findings.
+
 ### Added — `--url-list` to run stages 3-6 without stages 1-2
 - New `-u/--url-list <file>` flag: a pre-supplied list of live URLs (one per
   line; blank lines and `#` comments ignored) that seeds the downstream chain

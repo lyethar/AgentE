@@ -187,7 +187,9 @@ python orchestrator.py -d example.com
 # Include company name for LinkedIn enumeration + GitHub/Google dorks
 python orchestrator.py -d example.com -c "Acme Corp"
 
-# Resolve & validate a file of IPs/CIDRs (reverse DNS + FCrDNS), feeding FQDNs in
+# Resolve & validate a file of IPs/CIDRs (reverse DNS + FCrDNS), feeding FQDNs in.
+# In Stage 3 these in-scope IPs are also port-scanned with nmap (fast top-1000
+# sweep -> targeted -sV -sC of the open ports) before nuclei runs.
 python orchestrator.py -d example.com --ip-list targets_ips.txt
 
 # Scope Nuclei to just the --ip-list targets (they still get reverse-resolved,
@@ -322,14 +324,22 @@ output/example.com/20240501_130000/
 │   ├── 08-email.html
 │   ├── 09-exposure.html
 │   ├── ip-fqdn.html
-│   └── secrets.html
+│   ├── secrets.html
+│   ├── findings.md             # all findings in Markdown (LLM/human readable)
+│   └── LLM_PROMPT.md           # ready-to-paste prompt for LLM testing suggestions
 ├── logs/
-│   └── agente.log              # full debug log
+│   ├── agente.log              # full debug log
+│   ├── commands.log            # chronological index of EVERY command run (time, rc, duration)
+│   └── tools/                  # one detail file per invocation: command + full stdout/stderr
+│       └── NNNN_<tool>.log
 ├── 00-ip-resolve/              # --ip-list: PTR/FQDN/FCrDNS results
 ├── 01-subdomains/              # subfinder.txt, subscraper.txt, bbot_output/, subdomains_all.txt
 ├── 02-validation/              # dnsgen_out.txt, resolved_subdomains.txt, httpx.json, live_urls.txt
-├── 03-screenshots/             # Stage 3 — gowitness
+├── 03-screenshots/             # Stage 3 — nmap + gowitness + nuclei
 │   ├── live-urls.txt           #   input handed to gowitness + nuclei
+│   ├── nmap-targets.txt        #   --ip-list hosts handed to nmap (in-scope only)
+│   ├── nmap_fast.xml/.txt      #   fast top-1000 port sweep
+│   ├── nmap_service_<ip>.xml   #   targeted -sV -sC scan of the open ports
 │   ├── screenshots/            #   gowitness screenshots
 │   ├── gowitness.sqlite3       #   gowitness DB (served by `report server`)
 │   ├── gowitness_server.log    #   detached report-server log
@@ -365,7 +375,7 @@ directly in a browser.
 - **index.html** — executive dashboard: stat cards, charts (subdomain sources, HTTP status, nuclei severity, tool times), a gowitness-server link, and quick links to every sub-report
 - **01-subdomains.html** — source attribution per subdomain (includes IP-derived FQDNs, source `ptr`)
 - **02-live-hosts.html** — HTTP status, page title, detected tech stack, IP
-- **03-nuclei.html** — nuclei findings grouped by host, with severity, template, URL, and extracted data
+- **03-nuclei.html** — Stage 3: an **Nmap port-scan** section (open ports/services per in-scope `--ip-list` host, when supplied) followed by nuclei findings grouped by host, with severity, template, URL, and extracted data
 - **04-endpoints.html** — all discovered URLs (JS flagged), a JS-files tab, an API-paths tab, and a **waymore** archive tab with JS-flagged historical URLs
 - **05-assets.html** — per-asset download counts (JS/JSON/config) with download/skip/fail totals
 - **06-js-analysis.html** — semgrep findings + DOM source/sink/postMessage heuristics per asset
@@ -379,13 +389,42 @@ All tables have live search, column sort, and pagination.
 
 ---
 
+## Markdown Reports & LLM Hand-off
+
+Alongside the HTML, Stage 10 writes two Markdown files into `reports/`:
+
+- **findings.md** — every stage's findings as plain Markdown (summary table, Nmap
+  open ports/services, nuclei findings by severity, live hosts, subdomains,
+  endpoints, secrets, cloud, emails, exposures). Readable without a browser and
+  easy for an LLM to ingest.
+- **LLM_PROMPT.md** — a ready-to-paste prompt that maps the run's folder layout,
+  lists the tools that ran, and enumerates the key output files (only those the
+  run actually produced), then asks an LLM to propose **prioritised additional
+  manual testing**. Point an LLM at the run directory with this prompt to get
+  next-step suggestions grounded in the real findings.
+
+## Verbose Command Logging
+
+Every external command AgentE runs is captured under `logs/`, so you can see
+exactly what ran, when, and with what output — and screenshot it for a report:
+
+- **logs/commands.log** — one chronological line per invocation: timestamp, tool,
+  return code, duration, status, working dir, the full command, and a pointer to
+  its detail file. Skipped/missing tools are recorded too.
+- **logs/tools/NNNN_<tool>.log** — per-invocation detail: exact command,
+  start/finish timestamps, duration, return code, and full stdout/stderr.
+- **logs/agente.log** — the main run log; each tool's `Started` line now echoes
+  the full command line.
+
+---
+
 ## Stage Reference
 
 | # | Name | Tools | Input | Output |
 |---|------|-------|-------|--------|
 | 1 | Subdomain Enumeration | subfinder, subscraper, bbot | domain | `01-subdomains/subdomains_all.txt` |
 | 2 | Validation | dnsgen, puredns, httpx | subdomains | `02-validation/{resolved_subdomains.txt, httpx.json, live_urls.txt}` |
-| 3 | Screenshots & Vuln Scan | gowitness (+ report server), nuclei | live URLs | `03-screenshots/{screenshots/, gowitness.sqlite3, nuclei-results.out}`, `reports/03-nuclei.html` |
+| 3 | Port Scan, Screenshots & Vuln Scan | **nmap** (`--ip-list` scope, before nuclei), gowitness (+ report server), nuclei | live URLs + `--ip-list` IPs | `03-screenshots/{nmap_fast.xml, nmap_service_*.xml, screenshots/, gowitness.sqlite3, nuclei-results.out}`, `reports/03-nuclei.html` |
 | 4 | JS & Endpoint Crawl | gospider, katana, waymore | live URLs + domain | `04-crawl/{endpoints_all.txt, waymore-urs.txt}` |
 | 5 | Asset Collection | `requests` (built-in), Prettier (optional) | Stage 4 crawl output | `05-assets/collected/<asset>/{js,json,config}/`, `asset_manifest.json` |
 | 6 | JS Analysis | semgrep + DOM heuristics; regex secret catalog + trufflehog | Stage 5 collected JS | `reports/06-js-analysis.html`, `reports/secrets.html`, `06-js-analysis/{semgrep_raw/, secrets_findings.json, trufflehog.jsonl}` |

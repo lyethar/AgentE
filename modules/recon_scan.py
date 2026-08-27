@@ -25,6 +25,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from urllib.parse import urlparse
 
+from modules.port_scan import run_nmap_scan
 from utils.htmlreport import esc, page
 from utils.runner import ToolResult, run_parallel, run_tool, spawn_detached
 
@@ -167,9 +168,63 @@ def _finding_row(f: dict, include_host: bool = True) -> str:
     )
 
 
+def _build_nmap_section(nmap_data: dict) -> str:
+    """Render the Nmap port-scan results as an HTML section for the Stage 3 page."""
+    if not nmap_data or not nmap_data.get("enabled", False):
+        return ""
+    if nmap_data.get("skipped") and not nmap_data.get("hosts"):
+        reason = esc(nmap_data.get("skip_reason", "not run"))
+        return (
+            '<div class="section-card p-3 mb-4">'
+            '<div class="section-title">Nmap Port Scan (--ip-list scope)</div>'
+            f'<p class="text-muted small mb-0">Port scan not run: {reason}.</p></div>'
+        )
+
+    hosts = nmap_data.get("hosts", [])
+    rows = []
+    for h in hosts:
+        ip = esc(h.get("ip", ""))
+        hostname = esc(h.get("hostname", ""))
+        host_label = f"{ip} <span class='text-muted small'>({hostname})</span>" if hostname else ip
+        ports = h.get("ports", [])
+        if not ports:
+            rows.append(f'<tr><td>{host_label}</td><td colspan="4" '
+                        f'class="text-muted small">no open ports</td></tr>')
+            continue
+        for i, p in enumerate(ports):
+            svc = esc(p.get("service", ""))
+            product = " ".join(x for x in (p.get("product", ""), p.get("version", ""),
+                                           p.get("extrainfo", "")) if x)
+            scripts = p.get("scripts", {}) or {}
+            script_txt = "; ".join(f"{esc(k)}: {esc(v[:160])}" for k, v in scripts.items())
+            first_cell = host_label if i == 0 else ""
+            rows.append(
+                f'<tr><td>{first_cell}</td>'
+                f'<td class="small"><strong>{esc(str(p.get("port","")))}/{esc(p.get("proto",""))}</strong></td>'
+                f'<td class="small">{svc}</td>'
+                f'<td class="small text-muted">{esc(product)}</td>'
+                f'<td class="small text-muted">{script_txt}</td></tr>'
+            )
+    table = ('<table class="table table-sm w-100">'
+             '<thead><tr><th>Host</th><th>Port</th><th>Service</th>'
+             '<th>Product / Version</th><th>Scripts</th></tr></thead>'
+             f'<tbody>{"".join(rows)}</tbody></table>')
+    note = (f'{nmap_data.get("open_ports_total", 0)} open port(s) across '
+            f'{len([h for h in hosts if h.get("ports")])} host(s); '
+            f'{nmap_data.get("hosts_scanned", 0)} target(s) scanned. '
+            'Scope: hosts supplied via <code>--ip-list</code>. '
+            'Raw output: <code>03-screenshots/nmap_*.xml</code> / <code>.txt</code>.')
+    return (
+        '<div class="section-card p-3 mb-4">'
+        '<div class="section-title">Nmap Port Scan (--ip-list scope)</div>'
+        f'<p class="text-muted small">{note}</p>{table}</div>'
+    )
+
+
 def _build_nuclei_report(target: str, findings: list[dict], by_host: dict,
                          sev_counts: Counter, screenshots: int,
-                         server: dict, report_path: Path) -> None:
+                         server: dict, report_path: Path,
+                         nmap_data: dict | None = None) -> None:
     total = len(findings)
     hosts = len(by_host)
 
@@ -179,6 +234,7 @@ def _build_nuclei_report(target: str, findings: list[dict], by_host: dict,
                 f'<div class="stat-value {cls}">{value}</div>'
                 f'<div class="stat-label">{label}</div></div></div>')
 
+    open_ports = (nmap_data or {}).get("open_ports_total", 0)
     cards = "".join([
         card(total, "Findings"),
         card(sev_counts.get("critical", 0), "Critical &#9888;", "sev-critical"),
@@ -188,7 +244,10 @@ def _build_nuclei_report(target: str, findings: list[dict], by_host: dict,
         card(sev_counts.get("info", 0), "Info", "sev-info"),
         card(hosts, "Hosts"),
         card(screenshots, "Screenshots"),
+        card(open_ports, "Open Ports"),
     ])
+
+    nmap_section = _build_nmap_section(nmap_data or {})
 
     if server.get("started"):
         server_note = (
@@ -233,6 +292,7 @@ def _build_nuclei_report(target: str, findings: list[dict], by_host: dict,
     body = f"""
 <div class="row g-3 mb-4">{cards}</div>
 {server_note}
+{nmap_section}
 
 <ul class="nav nav-pills mb-3 flex-wrap">
   <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#tab-all">All Findings</button></li>
@@ -264,14 +324,17 @@ def _build_nuclei_report(target: str, findings: list[dict], by_host: dict,
     log.info("Nuclei report -> %s", report_path)
 
 
-def _empty(report_file: str = "", skip_reason: str = "") -> dict:
+def _empty(report_file: str = "", skip_reason: str = "",
+           nmap_data: dict | None = None) -> dict:
+    nmap_data = nmap_data or {"enabled": False, "hosts": [], "open_ports_total": 0}
     return {
         "findings": [], "by_host": {},
         "counts": {"total": 0, "critical": 0, "high": 0, "medium": 0,
                    "low": 0, "info": 0, "hosts": 0},
         "screenshots": 0, "server": {"started": False, "reason": skip_reason},
+        "nmap": nmap_data,
         "report_file": report_file, "skipped": True, "skip_reason": skip_reason,
-        "tool_results": [],
+        "tool_results": list(nmap_data.get("tool_results", [])),
     }
 
 
@@ -281,9 +344,10 @@ def _empty(report_file: str = "", skip_reason: str = "") -> dict:
 
 async def run_recon(domain: str, live_urls_file: Path, stage_dir: Path,
                     reports_dir: Path, cfg: dict,
-                    nuclei_fqdns: set[str] | None = None) -> dict:
+                    nuclei_fqdns: set[str] | None = None,
+                    nmap_targets: list[str] | None = None) -> dict:
     """
-    Run gowitness + nuclei against the validated live URLs.
+    Run Nmap (in-scope --ip-list hosts) + gowitness + nuclei.
 
     nuclei_fqdns: when None (default), nuclei scans the full live-URL list, like
     every other tool. When a set is supplied (via --nuclei-ip-list-only), nuclei
@@ -291,24 +355,41 @@ async def run_recon(domain: str, live_urls_file: Path, stage_dir: Path,
     targets — the FCrDNS-validated FQDNs and/or the raw IPs that had no resolvable
     domain name; those targets are written to a separate ``ip-list-live-urls.txt``.
     gowitness still screenshots the full list.
+
+    nmap_targets: IPs from ``--ip-list`` to port-scan. Nmap runs *before* nuclei
+    and only against these in-scope targets; when None/empty the port scan is
+    skipped. Nmap output feeds the same Stage 3 report.
     """
-    log.info("=== Stage 3: Screenshots & Vulnerability Scanning (gowitness + nuclei) ===")
+    log.info("=== Stage 3: Port Scan + Screenshots + Vulnerability Scanning "
+             "(nmap + gowitness + nuclei) ===")
     recon_cfg = cfg.get("recon", {})
+    nmap_cfg = recon_cfg.get("nmap", {})
     report_path = reports_dir / "03-nuclei.html"
+
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Nmap port scan (in-scope --ip-list targets) — runs BEFORE nuclei ──
+    nmap_data = {"enabled": False, "hosts": [], "open_ports_total": 0,
+                 "tool_results": []}
+    if nmap_targets and nmap_cfg.get("enabled", True):
+        nmap_data = await run_nmap_scan(nmap_targets, stage_dir, nmap_cfg)
+    elif nmap_targets:
+        log.info("Recon: nmap disabled in config — skipping port scan")
 
     # Materialise the exact input file the tool commands expect (live-urls.txt).
     live_urls: list[str] = []
     if live_urls_file and Path(live_urls_file).exists():
         live_urls = [u.strip() for u in Path(live_urls_file).read_text(
             errors="replace").splitlines() if u.strip()]
-    stage_dir.mkdir(parents=True, exist_ok=True)
     (stage_dir / "live-urls.txt").write_text("\n".join(live_urls), encoding="utf-8")
 
     if not live_urls:
-        log.warning("Recon: no live URLs — skipping gowitness/nuclei")
+        log.warning("Recon: no live URLs — skipping gowitness/nuclei"
+                    + (" (nmap results retained)" if nmap_data.get("hosts") else ""))
         _build_nuclei_report(domain, [], {}, Counter(), 0,
-                             {"started": False, "reason": "no live URLs"}, report_path)
-        data = _empty(str(report_path), "no live URLs")
+                             {"started": False, "reason": "no live URLs"}, report_path,
+                             nmap_data=nmap_data)
+        data = _empty(str(report_path), "no live URLs", nmap_data=nmap_data)
         return data
 
     # Decide what nuclei scans. gowitness always uses the full live-urls.txt.
@@ -353,7 +434,7 @@ async def run_recon(domain: str, live_urls_file: Path, stage_dir: Path,
     screenshots = _count_screenshots(stage_dir)
 
     _build_nuclei_report(domain, findings, by_host, sev_counts,
-                         screenshots, server, report_path)
+                         screenshots, server, report_path, nmap_data=nmap_data)
 
     counts = {
         "total": len(findings),
@@ -376,6 +457,7 @@ async def run_recon(domain: str, live_urls_file: Path, stage_dir: Path,
         "counts": counts,
         "screenshots": screenshots,
         "server": server,
+        "nmap": nmap_data,
         "report_file": str(report_path),
         "skipped": False,
         "skip_reason": "",
@@ -383,5 +465,5 @@ async def run_recon(domain: str, live_urls_file: Path, stage_dir: Path,
             {"tool": r.tool, "duration": r.duration, "skipped": r.skipped,
              "skip_reason": r.skip_reason}
             for r in (gw_result, nuclei_result)
-        ],
+        ] + list(nmap_data.get("tool_results", [])),
     }
