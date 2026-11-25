@@ -177,6 +177,9 @@ def parse_args() -> argparse.Namespace:
                    help="File of live URLs (one per line) to seed stages 3-6 when "
                         "stage 2 (validation) is not run. Required if --stages selects "
                         "any of stages 3-6 without stage 2.")
+    p.add_argument("-s", "--subdomain-list", default="",
+                   help="File of subdomains (one per line) to feed stage 2 (validation) "
+                        "when stage 1 (enumeration) is not run.")
     p.add_argument("--config",         default="config.yaml", help="Path to config.yaml")
     p.add_argument("--stages",         default="1,2,3,4,5,6,7,8,9,10",
                    help="Comma-separated stages: 1=subs,2=validate,3=recon(gowitness+nuclei),"
@@ -304,9 +307,12 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
     if 2 in stages:
         subs_file = Path(sub_data.get("merged_file", ""))
         if not subs_file.exists():
-            # create a placeholder so puredns/httpx still run with empty input
-            subs_file = dirs["subdomains"] / "subdomains_all.txt"
-            subs_file.write_text("", encoding="utf-8")
+            if args.subdomain_list:
+                subs_file = Path(args.subdomain_list)
+            else:
+                # create a placeholder so puredns/httpx still run with empty input
+                subs_file = dirs["subdomains"] / "subdomains_all.txt"
+                subs_file.write_text("", encoding="utf-8")
         val_data = await validate_subdomains(subs_file, dirs["validation"], cfg,
                                              extra_targets=ip_probe_targets)
 
@@ -528,6 +534,14 @@ def main():
     elif args.url_list and 2 in stages:
         print("  Note: --url-list is ignored because stage 2 (validation) is "
               "selected and will generate the live URLs.\n")
+
+    if args.subdomain_list:
+        if 1 in stages:
+            print("  Note: --subdomain-list is ignored because stage 1 (enumeration) is "
+                  "selected and will generate the subdomains.\n")
+        elif not Path(args.subdomain_list).is_file():
+            print(f"  Error: --subdomain-list file not found: {args.subdomain_list}\n")
+            sys.exit(2)
 
     # Build the run directory + per-stage layout only once we're actually scanning.
     outdir = prepare_output_dir(args.domain, cfg, args.output)
