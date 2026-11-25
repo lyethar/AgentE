@@ -15,14 +15,13 @@ log = logging.getLogger("agente.validation")
 async def run_dnsgen(subdomains_file: Path, outdir: Path, cfg: dict) -> ToolResult:
     """Generate permutations from discovered subdomains."""
     out_file = outdir / "dnsgen_out.txt"
+    wordlist = cfg.get("wordlist", "")
     cmd = [
         "dnsgen",
         str(subdomains_file),
-        "-w", cfg.get("wordlist", ""),
+        *(["-w", wordlist] if wordlist else []),
         *cfg.get("extra_args", []),
     ]
-    # remove empty wordlist flag if not configured
-    cmd = [c for c in cmd if c]
     result = await run_tool(
         cmd, "dnsgen",
         timeout=cfg.get("timeout"),

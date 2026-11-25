@@ -31,7 +31,7 @@ validation:
   puredns:
     timeout: 600
     rate_limit: 3000      # DNS queries per second
-    resolvers: ""         # path to resolvers.txt, or empty to use built-in
+    resolvers: "wordlists/resolvers.txt"   # path to resolvers.txt, or empty to use built-in
     extra_args: []
     # resolvers: "/opt/wordlists/resolvers.txt"
 

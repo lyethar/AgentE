@@ -71,6 +71,7 @@ TOOL_MANIFEST: list[dict] = [
     {"stage": 1, "bin": "bbot",             "hint": "pip install bbot"},
     {"stage": 2, "bin": "dnsgen",           "hint": "pip install dnsgen"},
     {"stage": 2, "bin": "puredns",          "hint": "go install github.com/d3mondev/puredns/v2@latest"},
+    {"stage": 2, "bin": "massdns",          "hint": "puredns needs massdns in PATH: https://github.com/blechschmidt/massdns"},
     {"stage": 2, "bin": "httpx",            "hint": "go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest"},
     {"stage": 3, "bin": "nmap",             "hint": "sudo apt install nmap  OR  https://nmap.org/download  (only used with --ip-list)"},
     {"stage": 3, "bin": "gowitness",        "hint": "Download a release binary: https://github.com/sensepost/gowitness/releases"},
@@ -305,14 +306,11 @@ async def run(args: argparse.Namespace, cfg: dict, log, dirs: dict[str, Path]) -
     ip_probe_targets = (ip_data.get("unvalidated_ips", [])
                         if args.nuclei_ip_list_only else [])
     if 2 in stages:
-        subs_file = Path(sub_data.get("merged_file", ""))
-        if not subs_file.exists():
-            if args.subdomain_list:
-                subs_file = Path(args.subdomain_list)
-            else:
-                # create a placeholder so puredns/httpx still run with empty input
-                subs_file = dirs["subdomains"] / "subdomains_all.txt"
-                subs_file.write_text("", encoding="utf-8")
+        subs_file = Path(sub_data.get("merged_file") or args.subdomain_list or ".")
+        if not subs_file.is_file():
+            # create a placeholder so puredns/httpx still run with empty input
+            subs_file = dirs["subdomains"] / "subdomains_all.txt"
+            subs_file.write_text("", encoding="utf-8")
         val_data = await validate_subdomains(subs_file, dirs["validation"], cfg,
                                              extra_targets=ip_probe_targets)
 
