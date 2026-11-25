@@ -51,7 +51,7 @@ async def run_bbot(domain: str, outdir: Path, cfg: dict) -> ToolResult:
     cmd = [
         "bbot",
         "-t", domain,
-        "-p", "subdomain-enum", "web-basic", "code-enum", "cloud-enum", "email-enum", "web-screenshots",
+        "-p", "subdomain-enum",
         "-o", str(bbot_out),
         "--silent",
         *cfg.get("extra_args", []),
